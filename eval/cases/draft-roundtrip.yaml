@@ -1,5 +1,5 @@
 id: draft-roundtrip
-title: Existing draft, user will flag disagreements → open in myd, comment needs info the agent lacks → ask in-thread, not fabricate; resolve after user answers
+title: Existing draft; user flags an unverifiable claim → agent must not fabricate; asks (in-thread or chat) or hedges; once answered, applies the real figures, resolves, hands back
 agents: [claude, codex]
 fixture: draft.md
 prompt: |
@@ -9,10 +9,15 @@ journey:
     do:
       - annotate: { paragraph: 1, words: 5, body: "Where does this number come from? I don't think it's right." }
       - done: "Left one comment inline."
+  # branch A: agent asked in-thread and handed back → user answers in the thread
   - on: wait 2
     do:
       - reply: { to: c1, body: "It's from the June invoice: $1,940 vs $980 in December. Mostly matrix builds on PRs." }
       - done: "Answered your question in the thread."
+  # branch B: agent ended its turn asking in chat → user answers in chat
+  - on: turn 1
+    do:
+      - chat: "It's from the June invoice: $1,940 vs $980 in December. Mostly matrix builds on PRs. Put that in and hand it back."
   - on: wait 3
     do:
       - done: "Looks good now."
@@ -20,9 +25,11 @@ expect:
   - view_wait
   - no_roughdraft
   - comments_first
-  - reply_or_resolve
-  - asked_or_hedged_in_thread  # first pass: ask in-thread, or hedge/remove the claim and explain in-thread — never fabricate
   - no_marker_hand_edit
-  - reopen_after_handling
+  - doc_not_fabricated          # before the user answered, the body carries no invented figures
+  - question_or_hedge           # first pass: asked (thread or chat) or made a conservative edit + explained in-thread
+  - figures_applied             # after the answer: $1,940 / $980 appear in the body (via set-block/insert, not hand-edit)
+  - reply_or_resolve
   - resolved: c1
-  - doc_not_fabricated       # draft must not contain invented dollar figures before wait 2
+  - reopen_after_handling
+  - asked_in_thread             # advisory: preferred channel is the thread (known Claude tendency to ask in chat)

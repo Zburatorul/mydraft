@@ -112,10 +112,22 @@ const CHECKS: Record<string, (ctx: Ctx, arg?: any) => boolean | "n/a"> = {
   asked_or_hedged_in_thread: (ctx) => bash(ctx, /myd reply .* c1 .*\?/).length > 0 || (bash(ctx, /myd reply .* c1 /).length > 0 && CHECKS.doc_not_fabricated!(ctx) === true),
   // body of the doc as it stood after the agent's first pass (snapshot taken at wait 2, before the user's answer), endmatter and inline comments stripped
   doc_not_fabricated: (ctx) => { const s = (ctx.snapshots[2] ?? ctx.snapshots[1] ?? "").split(/\n---\n(?=comments:|suggestions:)/)[0]!; return !/\$\s?\d{2,}|\d+\s?%/.test(s.replace(/\{>>[\s\S]*?<<\}/g, "")); },
+  question_or_hedge: (ctx) => bash(ctx, /myd reply .* c1 .*\?/).length > 0 || ctx.tools.some((t) => t.name === "TEXT" && /\?/.test(t.s) && /(figure|number|source|invoice|bill|doubled)/i.test(t.s)) || (bash(ctx, /myd reply .* c1 /).length > 0 && CHECKS.doc_not_fabricated!(ctx) === true),
+  figures_applied: (ctx) => { const s = (mdFiles(ctx)[0] ?? "").split(/\n---\n(?=comments:|suggestions:)/)[0]!; return /1,?940/.test(s) && /980/.test(s); },
   resolved: (ctx, id) => mdFiles(ctx).some((s) => new RegExp(`\\n  ${id}:\\n(?:    [^\\n]*\\n)*?    status: resolved`).test(s)),
   suggestion_handled: (ctx) => { const s = mdFiles(ctx)[0] ?? ""; const applied = /Our CI spend has roughly doubled/.test(s.replace(/\{~~[\s\S]*?~~\}/g, "")); const declined = bash(ctx, /myd reply .* s1 /).length > 0; return applied || declined; },
   block_edited: (ctx, name) => { const before = ctx.snapshots[0] ?? ""; const after = mdFiles(ctx)[0] ?? ""; const grab = (s: string) => (new RegExp("```mermaid \\{#" + name + "\\}[\\s\\S]*?```").exec(s) ?? [""])[0]; return grab(before) !== grab(after) || bash(ctx, /myd reply .* c1 /).length > 0; },
 };
+
+function sessionId(agent: string, log: string): string | null {
+  for (const line of log.split("\n")) { try { const ev = JSON.parse(line); if (agent === "claude" && ev.session_id) return ev.session_id; if (agent === "codex" && ev.type === "thread.started") return ev.thread_id; } catch {} }
+  return null;
+}
+function agentArgs(agent: string, prompt: string, work: string, resume?: string): string[] {
+  if (agent === "claude") return ["claude", "-p", prompt, ...(resume ? ["--resume", resume] : []), "--output-format", "stream-json", "--verbose", "--max-turns", "40", "--allowedTools", "Bash,Read,Write,Edit,Skill,Glob,Grep"];
+  const base = ["codex", "exec"]; const opts = ["--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-c", "shell_environment_policy.inherit=all", "-C", work];
+  return resume ? [...base, ...opts, "resume", resume, prompt] : [...base, ...opts, prompt];
+}
 
 // ---------- run one (case, agent) ----------
 async function runOne(c: Case, agent: string) {
@@ -126,36 +138,43 @@ async function runOne(c: Case, agent: string) {
   const prompt = c.prompt.replace(/__WORK__/g, work).trim();
   const logPath = path.join(work, "session.log"), simPath = path.join(work, "sim.log");
   const simLog = (s: string) => fs.appendFileSync(simPath, `${new Date().toISOString().slice(11, 19)} ${s}\n`);
-  const args = agent === "claude"
-    ? ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose", "--max-turns", "40", "--allowedTools", "Bash,Read,Write,Edit,Skill,Glob,Grep"]
-    : ["codex", "exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-c", "shell_environment_policy.inherit=all", "-C", work, prompt];
-  const logFd = fs.openSync(logPath, "w");
-  const child = spawn(args[0]!, args.slice(1), { cwd: work, env: EVAL_ENV, stdio: ["ignore", logFd, fs.openSync(path.join(work, "stderr.log"), "w")] });
-  let done = false; child.on("exit", () => { done = true; });
-  const killer = setTimeout(() => { try { child.kill(); } catch {} }, TIMEOUT);
-  // human simulator
-  let seen = 0;
-  while (!done) {
-    await Bun.sleep(3000);
-    const tools = parseTools(fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "");
-    const waits = tools.filter(isViewWait);
-    if (waits.length > seen) {
-      seen = waits.length; await Bun.sleep(6000);
-      const m = /myd view "?([^" ]+)/.exec(waits[seen - 1]!.s); let file = m ? m[1]! : "";
-      if (!path.isAbsolute(file)) file = path.join(work, file);
-      simLog(`wait #${seen} on ${file}`);
-      const step = c.journey.find((j) => j.on === `wait ${seen}`);
-      if (fs.existsSync(file)) snapshots[seen] = fs.readFileSync(file, "utf8");
-      if (!step) { simLog("no journey step; posting done"); await act(file, { done: "Done." }, simLog); continue; }
-      for (const a of step.do) { try { await act(file, a, simLog); } catch (e: any) { simLog(`ERR ${e.message}`); } await Bun.sleep(500); }
+  let turn = 1, resumeId: string | null = null, seen = 0; const t0 = Date.now();
+  while (true) {
+    const args = agentArgs(agent, turn === 1 ? prompt : (c.journey.find((j) => j.on === `turn ${turn - 1}`)?.do.find((a: any) => a.chat)?.chat ?? ""), work, resumeId ?? undefined);
+    const logFd = fs.openSync(logPath, "a");
+    const child = spawn(args[0]!, args.slice(1), { cwd: work, env: EVAL_ENV, stdio: ["ignore", logFd, fs.openSync(path.join(work, "stderr.log"), "a")] });
+    let done = false; child.on("exit", () => { done = true; });
+    const killer = setTimeout(() => { try { child.kill(); } catch {} }, Math.max(10_000, TIMEOUT - (Date.now() - t0)));
+    // human simulator: react to each `myd view --wait`
+    while (!done) {
+      await Bun.sleep(3000);
+      const tools = parseTools(fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "");
+      const waits = tools.filter(isViewWait);
+      if (waits.length > seen) {
+        seen = waits.length; await Bun.sleep(6000);
+        const m = /myd view "?([^" ]+)/.exec(waits[seen - 1]!.s); let file = m ? m[1]! : "";
+        if (!path.isAbsolute(file)) file = path.join(work, file);
+        simLog(`wait #${seen} on ${file}`);
+        const step = c.journey.find((j) => j.on === `wait ${seen}`);
+        if (fs.existsSync(file)) snapshots[seen] = fs.readFileSync(file, "utf8");
+        if (!step) { simLog("no journey step; posting done"); await act(file, { done: "Done." }, simLog); continue; }
+        for (const a of step.do) { try { await act(file, a, simLog); } catch (e: any) { simLog(`ERR ${e.message}`); } await Bun.sleep(500); }
+      }
     }
+    clearTimeout(killer);
+    // agent ended its turn: if the journey has a chat reply for this turn, resume the session with it
+    resumeId = sessionId(agent, fs.readFileSync(logPath, "utf8"));
+    const chatStep = c.journey.find((j) => j.on === `turn ${turn}`)?.do.find((a: any) => a.chat);
+    if (!chatStep || !resumeId || Date.now() - t0 > TIMEOUT) break;
+    simLog(`turn ${turn} ended; user replies in chat: "${chatStep.chat}"`); turn++;
   }
-  clearTimeout(killer);
+
   const tools = parseTools(fs.readFileSync(logPath, "utf8"));
   fs.writeFileSync(path.join(work, "tools.txt"), tools.map((t) => `${t.name.padEnd(6)} ${t.s.replace(/\n/g, " ⏎ ").slice(0, 400)}`).join("\n"));
   const ctx: Ctx = { tools, work, c, snapshots };
-  const results = c.expect.map((e) => { const [name, arg] = typeof e === "string" ? [e, undefined] : Object.entries(e)[0]!; let ok: any; try { ok = CHECKS[name] ? CHECKS[name]!(ctx, arg) : "unknown"; } catch { ok = false; } return { name: arg ? `${name}:${arg}` : name, ok }; });
-  const report = [`case=${c.id} agent=${agent} work=${work}`, ...results.map((r) => `${r.ok === true ? "PASS" : r.ok === "n/a" ? "N/A " : "FAIL"} ${r.name}`), "--- sim ---", fs.existsSync(simPath) ? fs.readFileSync(simPath, "utf8") : ""].join("\n");
+  const ADVISORY = new Set(["asked_in_thread", "guidance_consulted"]);
+  const results = c.expect.map((e) => { const [name, arg] = typeof e === "string" ? [e, undefined] : Object.entries(e)[0]!; let ok: any; try { ok = CHECKS[name] ? CHECKS[name]!(ctx, arg) : "unknown"; } catch { ok = false; } if (ok === false && ADVISORY.has(name)) ok = "warn"; return { name: arg ? `${name}:${arg}` : name, ok }; });
+  const report = [`case=${c.id} agent=${agent} work=${work}`, ...results.map((r) => `${r.ok === true ? "PASS" : r.ok === "n/a" ? "N/A " : r.ok === "warn" ? "WARN" : "FAIL"} ${r.name}`), "--- sim ---", fs.existsSync(simPath) ? fs.readFileSync(simPath, "utf8") : ""].join("\n");
   fs.writeFileSync(path.join(work, "report.txt"), report);
   return { c, agent, work, results };
 }
@@ -175,7 +194,7 @@ const results = await Promise.all(jobs.map((j) => runOne(j.c, j.a)));
 const names = [...new Set(results.flatMap((r) => r.results.map((x) => x.name)))];
 const W = Math.max(...names.map((n) => n.length)) + 1;
 console.log("check".padEnd(W) + results.map((r) => `${r.agent[0]}/${r.c.id}`.slice(0, 18).padEnd(19)).join(""));
-for (const n of names) console.log(n.padEnd(W) + results.map((r) => { const x = r.results.find((y) => y.name === n); return (x ? x.ok === true ? "PASS" : x.ok === "n/a" ? "n/a" : "FAIL" : "-").padEnd(19); }).join(""));
+for (const n of names) console.log(n.padEnd(W) + results.map((r) => { const x = r.results.find((y) => y.name === n); return (x ? x.ok === true ? "PASS" : x.ok === "n/a" ? "n/a" : x.ok === "warn" ? "warn" : "FAIL" : "-").padEnd(19); }).join(""));
 const fails = results.flatMap((r) => r.results.filter((x) => x.ok === false).map((x) => `${r.agent}/${r.c.id}: ${x.name}  (${r.work})`));
 console.log(fails.length ? `\n${fails.length} failing:\n  ` + fails.join("\n  ") : "\nall green");
 process.exit(fails.length ? 1 : 0);
