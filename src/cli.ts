@@ -146,8 +146,9 @@ switch (cmd) {
   case "comments": {
     const file = abs(pos[0]); const doc = loadDoc(file, fs.readFileSync(file, "utf8"));
     const items = flags.all ? doc.items : doc.items.filter((i) => i.status !== "resolved");
-    const slim = items.map(({ id, kind, suggestionKind, parentId, author, text, anchorText, originalText, replacementText, status, line, anchor }) => ({ id, kind, suggestionKind, parentId, author, status, line, anchorText, originalText, replacementText, anchor, text }));
-    out({ path: file, version: doc.version, items: slim }, slim.map((i) => `${i.id} [${i.kind}${i.parentId ? `→${i.parentId}` : ""}] ${i.author ?? "?"} L${i.line}${i.anchorText ? ` “${i.anchorText.slice(0, 60)}”` : ""}${i.anchor ? ` @${i.anchor.block}${i.anchor.target ? "›" + i.anchor.target : ""}` : ""}\n    ${i.kind === "suggestion" ? `${i.originalText} → ${i.replacementText}  ` : ""}${i.text}`).join("\n") || "no pending items");
+    // document-level notes (Done Reviewing notes): a comment with no anchor text, no object anchor, no parent
+    const slim = items.map(({ id, kind, suggestionKind, parentId, author, text, anchorText, originalText, replacementText, status, line, anchor }) => ({ id, kind: kind === "comment" && !anchorText && !anchor && !parentId ? "note" as const : kind, suggestionKind, parentId, author, status, line, anchorText, originalText, replacementText, anchor, text }));
+    out({ path: file, version: doc.version, items: slim }, slim.map((i) => `${i.id} [${i.kind === "note" ? "note — document-level, from Done Reviewing" : i.kind}${i.parentId ? `→${i.parentId}` : ""}] ${i.author ?? "?"} L${i.line}${i.anchorText ? ` “${i.anchorText.slice(0, 60)}”` : ""}${i.anchor ? ` @${i.anchor.block}${i.anchor.target ? "›" + i.anchor.target : ""}` : ""}\n    ${i.kind === "suggestion" ? `${i.originalText} → ${i.replacementText}  ` : ""}${i.text}`).join("\n") || "no pending items");
     break;
   }
   case "reply": { const file = abs(pos[0]); const doc = loadDoc(file, fs.readFileSync(file, "utf8")); fs.writeFileSync(file, replyDoc(doc, pos[1]!, pos.slice(2).join(" "), String(flags.by ?? "AI"))); out({ ok: true }, "replied"); break; }

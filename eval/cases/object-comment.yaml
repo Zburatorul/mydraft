@@ -8,7 +8,7 @@ journey:
   - on: wait 1
     do:
       - object: { block: flow, target: "node:Cache", body: "Why is there a cache between the API and the DB? Remove it unless it's needed." }
-      - done: "Question on the diagram."
+      - done: "Left a question on the Cache node in the diagram."
   - on: wait 2
     do:
       - done: "Good."
