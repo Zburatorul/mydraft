@@ -92,7 +92,7 @@ async function act(file: string, a: any, log: (s: string) => void) {
 }
 
 // ---------- checks ----------
-type Ctx = { tools: Tool[]; work: string; c: Case; snapshots: Record<number, string> };
+type Ctx = { tools: Tool[]; work: string; c: Case; snapshots: Record<string | number, string> };
 const bash = (ctx: Ctx, re: RegExp) => ctx.tools.filter((t) => t.name === "Bash" && re.test(t.s));
 const idx = (ctx: Ctx, pred: (t: Tool) => boolean) => ctx.tools.findIndex(pred);
 const mdFiles = (ctx: Ctx) => fs.readdirSync(ctx.work).filter((f) => f.endsWith(".md")).map((f) => fs.readFileSync(path.join(ctx.work, f), "utf8"));
@@ -111,7 +111,8 @@ const CHECKS: Record<string, (ctx: Ctx, arg?: any) => boolean | "n/a"> = {
   // replied on c1 with a question, or edited the block conservatively (no invented figures) and replied on c1
   asked_or_hedged_in_thread: (ctx) => bash(ctx, /myd reply .* c1 .*\?/).length > 0 || (bash(ctx, /myd reply .* c1 /).length > 0 && CHECKS.doc_not_fabricated!(ctx) === true),
   // body of the doc as it stood after the agent's first pass (snapshot taken at wait 2, before the user's answer), endmatter and inline comments stripped
-  doc_not_fabricated: (ctx) => { const s = (ctx.snapshots[2] ?? ctx.snapshots[1] ?? "").split(/\n---\n(?=comments:|suggestions:)/)[0]!; return !/\$\s?\d{2,}|\d+\s?%/.test(s.replace(/\{>>[\s\S]*?<<\}/g, "")); },
+  // "before the user answered": end of turn 1 if the agent stopped to ask in chat, else the state at wait 2
+  doc_not_fabricated: (ctx) => { const s = (ctx.snapshots["turn1"] ?? ctx.snapshots[2] ?? ctx.snapshots[1] ?? "").split(/\n---\n(?=comments:|suggestions:)/)[0]!; return !/\$\s?\d{2,}|\d+\s?%/.test(s.replace(/\{>>[\s\S]*?<<\}/g, "")); },
   question_or_hedge: (ctx) => bash(ctx, /myd reply .* c1 .*\?/).length > 0 || ctx.tools.some((t) => t.name === "TEXT" && /\?/.test(t.s) && /(figure|number|source|invoice|bill|doubled)/i.test(t.s)) || (bash(ctx, /myd reply .* c1 /).length > 0 && CHECKS.doc_not_fabricated!(ctx) === true),
   figures_applied: (ctx) => { const s = (mdFiles(ctx)[0] ?? "").split(/\n---\n(?=comments:|suggestions:)/)[0]!; return /1,?940/.test(s) && /980/.test(s); },
   resolved: (ctx, id) => mdFiles(ctx).some((s) => new RegExp(`\\n  ${id}:\\n(?:    [^\\n]*\\n)*?    status: resolved`).test(s)),
@@ -133,7 +134,7 @@ function agentArgs(agent: string, prompt: string, work: string, resume?: string)
 async function runOne(c: Case, agent: string) {
   const stamp = new Date().toISOString().slice(11, 19).replace(/:/g, "");
   const work = path.join(OUT, `${agent}-${c.id}-${stamp}`); fs.mkdirSync(work, { recursive: true });
-  const snapshots: Record<number, string> = {};
+  const snapshots: Record<string | number, string> = {};
   if (c.fixture) { fs.copyFileSync(path.join(ROOT, "eval/fixtures", c.fixture), path.join(work, c.fixture)); snapshots[0] = fs.readFileSync(path.join(work, c.fixture), "utf8"); }
   const prompt = c.prompt.replace(/__WORK__/g, work).trim();
   const logPath = path.join(work, "session.log"), simPath = path.join(work, "sim.log");
@@ -164,6 +165,7 @@ async function runOne(c: Case, agent: string) {
     clearTimeout(killer);
     // agent ended its turn: if the journey has a chat reply for this turn, resume the session with it
     resumeId = sessionId(agent, fs.readFileSync(logPath, "utf8"));
+    for (const f of fs.readdirSync(work).filter((f) => f.endsWith(".md"))) snapshots[`turn${turn}` as any] = fs.readFileSync(path.join(work, f), "utf8");
     const chatStep = c.journey.find((j) => j.on === `turn ${turn}`)?.do.find((a: any) => a.chat);
     if (!chatStep || !resumeId || Date.now() - t0 > TIMEOUT) break;
     simLog(`turn ${turn} ended; user replies in chat: "${chatStep.chat}"`); turn++;
