@@ -6,7 +6,8 @@
 @media (prefers-color-scheme: dark) {
   :root { --bg: #111214; --fg: #e8e8ea; --muted: #9a9ca3; --panel: #18191c; --line: #2a2b30; --accent: #7aa2ff;
     --hl-comment: rgba(255, 213, 79, .32); --hl-suggest: rgba(103, 220, 140, .3); --code-bg: #1c1d22; }
-  .shiki, .shiki span { color: var(--shiki-dark) !important; background-color: var(--shiki-dark-bg) !important; }
+  .shiki, .shiki span { color: var(--shiki-dark) !important; }
+  .markdown-body pre.shiki { background: var(--shiki-dark-bg) !important; }
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 -apple-system, "Inter", system-ui, sans-serif; }
@@ -33,6 +34,7 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 24px; ma
 .markdown-body pre { background: var(--code-bg); padding: 12px 14px; border-radius: 8px; overflow-x: auto; }
 .markdown-body pre code { background: none; padding: 0; }
 .markdown-body pre.shiki { background: var(--shiki-light-bg) !important; }
+.shiki span { color: var(--shiki-light); }
 .markdown-body table { border-collapse: collapse; margin: 1em 0; display: block; overflow-x: auto; max-width: 100%; }
 .markdown-body th, .markdown-body td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
 .markdown-body th { background: var(--code-bg); }
@@ -62,6 +64,10 @@ main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 24px; ma
 ::highlight(myd-resolved) { background: var(--hl-resolved); }
 
 /* popover + dialogs */
+#editor { position: absolute; z-index: 11; width: min(420px, 90vw); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.18); font-size: 13px; }
+#editor textarea { width: 100%; font: inherit; font-size: 14px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); margin: 6px 0; resize: vertical; }
+#editor .row { display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
+#editor .hint { color: var(--muted); font-size: 11px; margin-right: auto; }
 #popover { position: absolute; z-index: 10; display: flex; gap: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px; box-shadow: 0 6px 20px rgba(0,0,0,.15); }
 dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--fg); width: min(560px, 92vw); padding: 18px; }
 dialog::backdrop { background: rgba(0,0,0,.35); }

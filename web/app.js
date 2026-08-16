@@ -11,15 +11,19 @@ document.title = docPath.split("/").pop() + " · myd";
 $("#title").textContent = docPath.split("/").pop();
 
 // ---------- load / render ----------
+let loadSeq = 0;
 async function load() {
+  const seq = ++loadSeq;
   const r = await fetch(`/api/doc?path=${encodeURIComponent(docPath)}`);
   if (!r.ok) { statusEl.textContent = "load failed"; return; }
   const data = await r.json();
+  if (seq !== loadSeq) return; // a newer load superseded this one
   const y = window.scrollY;
   state = data;
   docEl.innerHTML = data.html;
   fixRelativeImages();
-  await hydrateRich();
+  await hydrateRich(seq);
+  if (seq !== loadSeq) return;
   paintHighlights();
   renderRail();
   window.scrollTo(0, y);
@@ -36,39 +40,44 @@ function fixRelativeImages() {
 
 // ---------- rich blocks ----------
 let mermaidMod, vegaLoaded;
-async function hydrateRich() {
+async function hydrateRich(seq) {
   const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-  const merm = docEl.querySelectorAll(".rich.mermaid");
+  const fresh = (sel) => [...docEl.querySelectorAll(sel)].filter((el) => !el.dataset.hydrated && (el.dataset.hydrated = "1"));
+  const stale = () => seq !== loadSeq;
+  const merm = fresh(".rich.mermaid");
   if (merm.length) {
     mermaidMod ??= (await import("/vendor/mermaid/dist/mermaid.esm.min.mjs")).default;
     mermaidMod.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "strict" });
     let i = 0;
     for (const el of merm) {
+      if (stale()) return;
       const src = el.querySelector(".rich-src").textContent;
       try {
         const { svg } = await mermaidMod.render(`mm${Date.now()}${i++}`, src);
         const host = document.createElement("div"); host.className = "rich-view"; host.innerHTML = svg;
         el.appendChild(host); addSourceToggle(el);
         // clickable nodes → object comments
-        host.querySelectorAll("g.node, g.edgeLabel, .cluster").forEach((g) => { g.classList.add("obj"); g.addEventListener("click", (e) => { e.stopPropagation(); objectComment(el, g.id || g.getAttribute("data-id") || g.textContent.trim().slice(0, 40)); }); });
+        host.querySelectorAll("g.node, g.edgeLabel, .cluster").forEach((g) => { g.classList.add("obj"); g.addEventListener("click", (e) => { e.stopPropagation(); objectComment(el, g.id || g.getAttribute("data-id") || g.textContent.trim().slice(0, 40), e); }); });
       } catch (err) { el.insertAdjacentHTML("beforeend", `<div class="rich-error">Mermaid: ${String(err.message || err)}</div>`); }
     }
   }
-  const vega = docEl.querySelectorAll(".rich.vega");
+  if (stale()) return;
+  const vega = fresh(".rich.vega");
   if (vega.length) {
     if (!vegaLoaded) { for (const f of ["/vendor/vega/build/vega.min.js", "/vendor/vega-lite/build/vega-lite.min.js", "/vendor/vega-embed/build/vega-embed.min.js"]) await loadScript(f); vegaLoaded = true; }
     for (const el of vega) {
+      if (stale()) return;
       const src = el.querySelector(".rich-src").textContent;
       const host = document.createElement("div"); host.className = "rich-view"; el.appendChild(host);
       try {
         const spec = JSON.parse(src);
         const res = await window.vegaEmbed(host, spec, { actions: false, theme: dark ? "dark" : undefined });
         addSourceToggle(el);
-        res.view.addEventListener("click", (ev, item) => { if (item && item.datum) objectComment(el, "datum:" + JSON.stringify(item.datum).slice(0, 80)); });
+        res.view.addEventListener("click", (ev, item) => { if (item && item.datum) objectComment(el, "datum:" + JSON.stringify(item.datum).slice(0, 80), ev); });
       } catch (err) { host.innerHTML = `<div class="rich-error">Chart: ${String(err.message || err)}</div>`; }
     }
   }
-  for (const el of docEl.querySelectorAll(".rich.island")) {
+  for (const el of fresh(".rich.island")) {
     const src = el.querySelector(".rich-src").textContent;
     const f = document.createElement("iframe");
     f.className = "rich-view island-frame"; f.setAttribute("sandbox", "allow-scripts"); f.srcdoc = src; f.loading = "lazy";
@@ -80,7 +89,7 @@ function addSourceToggle(el) {
   const b = document.createElement("button"); b.className = "src-toggle"; b.textContent = "source";
   b.onclick = () => el.classList.toggle("show-src"); el.prepend(b);
   const c = document.createElement("button"); c.className = "obj-comment"; c.title = "Comment on this block"; c.textContent = "💬";
-  c.onclick = () => objectComment(el, null); el.prepend(c);
+  c.onclick = (e) => objectComment(el, null, e); el.prepend(c);
 }
 function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
 
@@ -123,7 +132,7 @@ function findTextRange(root, needle) {
   return r;
 }
 docEl.addEventListener("click", (e) => {
-  if (!state.__ranges || popover.matches(":not([hidden])")) return;
+  if (!state.__ranges || !popover.hidden || !editor.hidden) return;
   const pos = document.caretPositionFromPoint ? document.caretPositionFromPoint(e.clientX, e.clientY) : null;
   const rng = pos ? (() => { const r = document.createRange(); r.setStart(pos.offsetNode, pos.offset); r.collapse(true); return r; })() : document.caretRangeFromPoint?.(e.clientX, e.clientY);
   if (!rng) return;
@@ -138,7 +147,7 @@ document.addEventListener("mouseup", () => setTimeout(captureSelection, 0));
 document.addEventListener("keyup", (e) => { if (e.key === "Escape") { popover.hidden = true; } });
 function captureSelection() {
   const sel = getSelection();
-  if (!sel || sel.isCollapsed || !docEl.contains(sel.anchorNode)) { if (!$("#dlg").open) popover.hidden = true; return; }
+  if (!sel || sel.isCollapsed || !docEl.contains(sel.anchorNode)) { if (editor.hidden) popover.hidden = true; return; }
   const range = sel.getRangeAt(0);
   const text = sel.toString();
   if (!text.trim()) return;
@@ -155,32 +164,52 @@ function captureSelection() {
 popover.addEventListener("mousedown", (e) => e.preventDefault());
 popover.addEventListener("click", (e) => {
   const act = e.target.closest("button")?.dataset.act; if (!act || !pending) return;
-  popover.hidden = true; openDialog(act);
+  popover.hidden = true; openDialog(act, popover.getBoundingClientRect());
 });
-const dlg = $("#dlg");
-function openDialog(kind) {
-  $("#dlgAnchor").textContent = pending.anchorText;
-  const isSug = kind === "suggest";
-  $("#dlgReplLabel").hidden = !isSug; $("#dlgBodyLabel").firstChild.textContent = isSug ? "Note (optional)" : "Comment";
-  $("#dlgRepl").value = isSug ? pending.anchorText : ""; $("#dlgBody").value = "";
-  dlg.dataset.kind = kind; dlg.showModal(); (isSug ? $("#dlgRepl") : $("#dlgBody")).focus();
+const editor = $("#editor");
+let edMode = "comment", edTarget = null; // edTarget: {kind:"text"} | {kind:"object", blockEl, target}
+function placeEditor(rect) {
+  editor.style.left = `${Math.min(window.innerWidth - 440, Math.max(8, rect.left + window.scrollX))}px`;
+  editor.style.top = `${rect.bottom + window.scrollY + 8}px`;
+  editor.hidden = false;
 }
-dlg.addEventListener("close", async () => {
-  if (dlg.returnValue !== "ok" || !pending) return;
-  const kind = dlg.dataset.kind;
-  const payload = { path: docPath, version: state.version, ...pending, kind: kind === "suggest" ? "suggestion" : "comment", body: $("#dlgBody").value, replacement: $("#dlgRepl").value, note: $("#dlgBody").value, by: "user" };
-  if (kind === "comment" && !payload.body.trim()) return;
+function openDialog(kind, rect) {
+  edMode = kind; edTarget = { kind: "text" };
+  $("#edAnchor").textContent = pending.anchorText; $("#edAnchor").hidden = false;
+  const isSug = kind === "suggest";
+  $("#edRepl").hidden = !isSug; $("#edRepl").value = isSug ? pending.anchorText : "";
+  $("#edBody").value = ""; $("#edBody").placeholder = isSug ? "Note (optional)" : "Comment…";
+  placeEditor(rect ?? getSelection().getRangeAt(0).getBoundingClientRect());
+  (isSug ? $("#edRepl") : $("#edBody")).focus();
+}
+function closeEditor() { editor.hidden = true; pending = null; edTarget = null; getSelection()?.removeAllRanges(); }
+$("#edCancel").onclick = closeEditor;
+editor.addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") saveEditor(); if (e.key === "Escape") closeEditor(); });
+$("#edSave").onclick = saveEditor;
+async function saveEditor() {
+  const body = $("#edBody").value, repl = $("#edRepl").value;
+  if (edTarget?.kind === "object") {
+    if (!body.trim()) return;
+    const r = await fetch("/api/annotate-object", { method: "POST", body: JSON.stringify({ path: docPath, version: state.version, bid: edTarget.blockEl.dataset.bid, target: edTarget.target, body, by: "user" }) });
+    if (!r.ok) alert("Failed to save comment");
+    closeEditor(); return;
+  }
+  if (!pending) return;
+  const isSug = edMode === "suggest";
+  if (!isSug && !body.trim()) return;
+  const payload = { path: docPath, version: state.version, ...pending, kind: isSug ? "suggestion" : "comment", body, replacement: repl, note: body, by: "user" };
   const r = await fetch("/api/annotate", { method: "POST", body: JSON.stringify(payload) });
   if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || "Failed to save annotation"); if (r.status === 409) load(); }
-  pending = null; getSelection()?.removeAllRanges();
-});
-dlg.addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { dlg.close("ok"); } });
+  closeEditor();
+}
+document.addEventListener("mousedown", (e) => { if (!editor.hidden && !editor.contains(e.target) && !popover.contains(e.target)) { /* keep open while user reselects? close for simplicity */ if (!$("#edBody").value && !$("#edRepl").value) closeEditor(); } });
 
-async function objectComment(blockEl, target) {
-  const body = prompt(target ? `Comment on ${target}:` : "Comment on this block:");
-  if (!body || !body.trim()) return;
-  const r = await fetch("/api/annotate-object", { method: "POST", body: JSON.stringify({ path: docPath, version: state.version, bid: blockEl.dataset.bid, target, body, by: "user" }) });
-  if (!r.ok) alert("Failed to save comment");
+function objectComment(blockEl, target, evt) {
+  edMode = "comment"; edTarget = { kind: "object", blockEl, target }; pending = null;
+  $("#edAnchor").textContent = target ? `${blockEl.dataset.bid} › ${target}` : `${blockEl.dataset.bid} (whole block)`; $("#edAnchor").hidden = false;
+  $("#edRepl").hidden = true; $("#edBody").value = ""; $("#edBody").placeholder = "Comment…";
+  const rect = (evt?.target?.getBoundingClientRect?.()) ?? blockEl.getBoundingClientRect();
+  placeEditor(rect); $("#edBody").focus();
 }
 
 // ---------- rail ----------

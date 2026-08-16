@@ -62,6 +62,7 @@ export function startServer(port = 7474) {
         if (p.startsWith("/web/")) return serveFile(WEB, p.slice(5));
         if (p.startsWith("/vendor/")) return serveFile(NM, p.slice(8));
         if (p === "/api/health") return json({ ok: true, pid: process.pid, port }, 200);
+        if (p === "/api/done-events") { const dp = url.searchParams.get("path"); const f = path.join(STATE_DIR, "done.log"); const evs = fs.existsSync(f) ? fs.readFileSync(f, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []; return json(evs.filter((e) => !dp || e.path === path.resolve(dp)), 200); }
 
         if (p === "/api/doc") {
           const doc = readDoc(url.searchParams.get("path") ?? "");
@@ -113,10 +114,11 @@ export function startServer(port = 7474) {
           const doc = readDoc(b.path);
           if (b.note && String(b.note).trim()) {
             const { appendRoughdraftDocumentComment } = await import("../vendor/rfm/index.js") as any;
-            writeDoc(doc, appendRoughdraftDocumentComment(doc.source, { body: String(b.note).trim(), author: b.by ?? "user" }));
+            writeDoc(doc, appendRoughdraftDocumentComment(doc.source, { message: String(b.note).trim(), author: b.by ?? "user" }));
           }
           const ev = { path: doc.path, at: new Date().toISOString(), note: b.note };
           doneLog.push(ev);
+          fs.appendFileSync(path.join(STATE_DIR, "done.log"), JSON.stringify(ev) + "\n");
           broadcast(doc.path, { type: "done", ...ev });
           return json({ ok: true }, 200);
         }

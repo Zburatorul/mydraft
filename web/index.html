@@ -23,14 +23,12 @@
   <button data-act="comment">💬 Comment</button>
   <button data-act="suggest">✏️ Suggest</button>
 </div>
-<dialog id="dlg">
-  <form method="dialog" id="dlgForm">
-    <div id="dlgAnchor" class="anchor-preview"></div>
-    <label id="dlgReplLabel" hidden>Replacement<textarea id="dlgRepl" rows="2"></textarea></label>
-    <label id="dlgBodyLabel">Comment<textarea id="dlgBody" rows="3" autofocus></textarea></label>
-    <menu><button value="cancel">Cancel</button><button value="ok" class="primary">Save</button></menu>
-  </form>
-</dialog>
+<div id="editor" hidden>
+  <div id="edAnchor" class="anchor-preview"></div>
+  <textarea id="edRepl" rows="2" placeholder="Replacement text" hidden></textarea>
+  <textarea id="edBody" rows="2" placeholder="Comment…"></textarea>
+  <div class="row"><span class="hint">Ctrl+Enter to save · Esc to cancel</span><button id="edCancel">Cancel</button><button id="edSave" class="primary">Save</button></div>
+</div>
 <dialog id="doneDlg">
   <form method="dialog">
     <label>Overall note for the agent (optional)<textarea id="doneNote" rows="4"></textarea></label>
