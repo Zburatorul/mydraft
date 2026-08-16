@@ -98,7 +98,8 @@ const CHECKS: Record<string, (ctx: Ctx, arg?: any) => boolean | "n/a"> = {
   no_ascii_diagram: (ctx) => !ctx.tools.some((t) => t.name === "TEXT" && /(\+-{3,}\+|┌|──►|─┐|│.*│.*│)/.test(t.s)),
   mermaid_in_doc: (ctx) => mdFiles(ctx).some((s) => /```mermaid/.test(s)),
   asked_in_thread: (ctx) => bash(ctx, /myd reply .*\?/).length > 0,
-  doc_not_fabricated: (ctx) => { const s = ctx.snapshots[2] ?? ""; return !/\$\s?\d{2,}|\d+\s?%/.test(s.replace(/\{>>[\s\S]*?<<\}/g, "")); },
+  // body of the doc as it stood after the agent's first pass (snapshot taken at wait 2, before the user's answer), endmatter and inline comments stripped
+  doc_not_fabricated: (ctx) => { const s = (ctx.snapshots[2] ?? ctx.snapshots[1] ?? "").split(/\n---\n(?=comments:|suggestions:)/)[0]!; return !/\$\s?\d{2,}|\d+\s?%/.test(s.replace(/\{>>[\s\S]*?<<\}/g, "")); },
   resolved: (ctx, id) => mdFiles(ctx).some((s) => new RegExp(`\\n  ${id}:\\n(?:    [^\\n]*\\n)*?    status: resolved`).test(s)),
   suggestion_handled: (ctx) => { const s = mdFiles(ctx)[0] ?? ""; const applied = /Our CI spend has roughly doubled/.test(s.replace(/\{~~[\s\S]*?~~\}/g, "")); const declined = bash(ctx, /myd reply .* s1 /).length > 0; return applied || declined; },
   block_edited: (ctx, name) => { const before = ctx.snapshots[0] ?? ""; const after = mdFiles(ctx)[0] ?? ""; const grab = (s: string) => (new RegExp("```mermaid \\{#" + name + "\\}[\\s\\S]*?```").exec(s) ?? [""])[0]; return grab(before) !== grab(after) || bash(ctx, /myd reply .* c1 /).length > 0; },
@@ -132,9 +133,9 @@ async function runOne(c: Case, agent: string) {
       if (!path.isAbsolute(file)) file = path.join(work, file);
       simLog(`wait #${seen} on ${file}`);
       const step = c.journey.find((j) => j.on === `wait ${seen}`);
+      if (fs.existsSync(file)) snapshots[seen] = fs.readFileSync(file, "utf8");
       if (!step) { simLog("no journey step; posting done"); await act(file, { done: "Done." }, simLog); continue; }
       for (const a of step.do) { try { await act(file, a, simLog); } catch (e: any) { simLog(`ERR ${e.message}`); } await Bun.sleep(500); }
-      if (fs.existsSync(file)) snapshots[seen] = fs.readFileSync(file, "utf8");
     }
   }
   clearTimeout(killer);
