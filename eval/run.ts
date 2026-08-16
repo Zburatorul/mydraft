@@ -79,6 +79,14 @@ function candidates(html: string) {
   return out;
 }
 function nthParagraph(html: string, n: number) { return candidates(html)[n - 1] ?? null; }
+// The server tracks reviews by id (myd view → POST /api/track). Headless, there is no human tab, so the
+// simulator opens its own review on the path (superseding the agent's, which nothing is looking at) and
+// acts under that id. `done` is path-scoped, so the agent's `--wait` still resolves.
+const reviewIds = new Map<string, string>();
+async function reviewId(file: string) {
+  if (!reviewIds.has(file)) { const r = await api("/api/track", { path: file }); if (r.ok && r.data?.reviewId) reviewIds.set(file, r.data.reviewId); }
+  return reviewIds.get(file);
+}
 async function act(file: string, a: any, log: (s: string) => void) {
   const rid = await reviewId(file);
   const d = await doc(file);
