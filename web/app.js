@@ -38,10 +38,15 @@ function fixRelativeImages() {
   }
 }
 
+// ---------- theme ----------
+const isDark = () => document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+(function initTheme() { const t = localStorage.getItem("myd-theme"); if (t) document.documentElement.dataset.theme = t; })();
+$("#themeBtn").onclick = () => { const next = isDark() ? "light" : "dark"; document.documentElement.dataset.theme = next; localStorage.setItem("myd-theme", next); docEl.querySelectorAll("[data-hydrated]").forEach((el) => { delete el.dataset.hydrated; el.querySelectorAll(".rich-view, .src-toggle, .obj-comment").forEach((x) => x.remove()); }); hydrateRich(loadSeq).then(paintHighlights); };
+
 // ---------- rich blocks ----------
 let mermaidMod, vegaLoaded;
 async function hydrateRich(seq) {
-  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const dark = isDark();
   const fresh = (sel) => [...docEl.querySelectorAll(sel)].filter((el) => !el.dataset.hydrated && (el.dataset.hydrated = "1"));
   const stale = () => seq !== loadSeq;
   const merm = fresh(".rich.mermaid");

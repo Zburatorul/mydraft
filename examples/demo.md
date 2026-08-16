@@ -1,6 +1,6 @@
-# myd demo: rich blocks + annotations
+# my{~~d demo: rich blocks + annotations~>d demo: rich blocks + annotations bleu blue blue, test~~}{#s2}
 
-This paragraph has **{==bold text==}{>>why bold?<<}{#c1}**, `inline code`, a [link](https://example.com), and inline math $\alpha + \beta = \gamma$.
+Thi{==s paragra==}{>>test<<}{#c11}ph has **{==bold text==}{>>why bold?<<}{#c1}**, `inline code`, a [link](https://example.com), and inline math $\alpha + \beta = \gamma$.
 
 ## Diagram
 
@@ -104,7 +104,25 @@ comments:
     by: AI
     at: 2026-08-16T04:04:39.220Z
     re: c5
+  c10:
+    body: want dark/lgith mode toggle
+    by: user
+    at: 2026-08-16T04:15:47.097Z
+    status: resolved
+    resolvedBy: AI
+    resolvedAt: 2026-08-16T04:16:05.968Z
+  c11:
+    by: user
+    at: 2026-08-16T04:15:52.895Z
+  c12:
+    body: Added ◐ toggle in the top bar (persists in localStorage; re-renders Mermaid/Vega with the matching theme).
+    by: AI
+    at: 2026-08-16T04:16:05.783Z
+    re: c10
 suggestions:
   s1:
     by: user
     at: 2026-08-16T02:19:01.161Z
+  s2:
+    by: user
+    at: 2026-08-16T04:14:57.974Z
