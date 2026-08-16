@@ -1,0 +1,23 @@
+eval myd server on :7575 (MYD_HOME=/home/eugeniu/tmp/myd-eval/.myd-home); browsers suppressed
+running 10 job(s): claude/plan-handover, codex/plan-handover, claude/explainer-diagram, codex/explainer-diagram, claude/draft-roundtrip, codex/draft-roundtrip, claude/suggestion-apply, codex/suggestion-apply, claude/object-comment, codex/object-comment
+check                 c/plan-handover    c/plan-handover    c/explainer-diagra c/explainer-diagra c/draft-roundtrip  c/draft-roundtrip  c/suggestion-apply c/suggestion-apply c/object-comment   c/object-comment   
+wrote_md              PASS               PASS               PASS               PASS               -                  -                  -                  -                  -                  -                  
+view_wait             PASS               PASS               PASS               PASS               PASS               PASS               PASS               PASS               PASS               PASS               
+no_roughdraft         PASS               PASS               PASS               PASS               PASS               PASS               -                  -                  -                  -                  
+comments_first        PASS               PASS               PASS               PASS               PASS               PASS               PASS               PASS               PASS               PASS               
+reply_or_resolve      PASS               PASS               PASS               PASS               PASS               PASS               -                  -                  PASS               PASS               
+no_marker_hand_edit   PASS               PASS               PASS               PASS               PASS               PASS               PASS               PASS               PASS               PASS               
+reopen_after_handling PASS               PASS               PASS               PASS               PASS               PASS               PASS               PASS               PASS               PASS               
+guidance_consulted    PASS               PASS               -                  -                  -                  -                  -                  -                  -                  -                  
+no_ascii_diagram      -                  -                  PASS               PASS               -                  -                  -                  -                  -                  -                  
+mermaid_in_doc        -                  -                  PASS               PASS               -                  -                  -                  -                  -                  -                  
+doc_not_fabricated    -                  -                  -                  -                  PASS               PASS               -                  -                  -                  -                  
+question_or_hedge     -                  -                  -                  -                  PASS               PASS               -                  -                  -                  -                  
+figures_applied       -                  -                  -                  -                  PASS               PASS               -                  -                  -                  -                  
+resolved:c1           -                  -                  -                  -                  PASS               PASS               -                  -                  -                  -                  
+asked_in_thread       -                  -                  -                  -                  warn               warn               -                  -                  -                  -                  
+suggestion_handled    -                  -                  -                  -                  -                  -                  PASS               PASS               -                  -                  
+block_edited:flow     -                  -                  -                  -                  -                  -                  -                  -                  PASS               PASS               
+
+all green
+exit=0
