@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>myd</title>
+<link rel="stylesheet" href="/vendor/katex/dist/katex.min.css">
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+<header id="bar">
+  <span id="title">myd</span>
+  <span id="status"></span>
+  <span class="spacer"></span>
+  <label class="toggle"><input type="checkbox" id="showResolved"> resolved</label>
+  <button id="doneBtn" class="primary">Done Reviewing</button>
+</header>
+<main>
+  <article id="doc" class="markdown-body"></article>
+  <aside id="rail"><h3>Comments <span id="count"></span></h3><div id="threads"></div></aside>
+</main>
+<div id="popover" hidden>
+  <button data-act="comment">💬 Comment</button>
+  <button data-act="suggest">✏️ Suggest</button>
+</div>
+<dialog id="dlg">
+  <form method="dialog" id="dlgForm">
+    <div id="dlgAnchor" class="anchor-preview"></div>
+    <label id="dlgReplLabel" hidden>Replacement<textarea id="dlgRepl" rows="2"></textarea></label>
+    <label id="dlgBodyLabel">Comment<textarea id="dlgBody" rows="3" autofocus></textarea></label>
+    <menu><button value="cancel">Cancel</button><button value="ok" class="primary">Save</button></menu>
+  </form>
+</dialog>
+<dialog id="doneDlg">
+  <form method="dialog">
+    <label>Overall note for the agent (optional)<textarea id="doneNote" rows="4"></textarea></label>
+    <menu><button value="cancel">Cancel</button><button value="ok" class="primary">Done Reviewing</button></menu>
+  </form>
+</dialog>
+<script type="module" src="/web/app.js"></script>
+</body>
+</html>
