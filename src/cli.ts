@@ -65,12 +65,20 @@ const HELP = `myd — Markdown viewer + annotations + agent CLI
   myd shot <file.md> [out.png] [--width W]  screenshot the rendered document (headless Chrome)
   myd export <file.md> [out.html]           single self-contained HTML (delivery artifact)
   myd diff <old.md> <new.md> [out.md]       CriticMarkup diff between two versions
+  myd guide [topic]                         agent guide; topics: workflow blocks objects rich criticmarkup export api
   myd serve                                 run the server in the foreground
   myd status | stop
 Flags: --json for machine output.`;
 
 switch (cmd) {
   case undefined: case "help": case "--help": console.log(HELP); break;
+  case "guide": {
+    const g = fs.readFileSync(path.join(ROOT, "docs/agent-guide.md"), "utf8");
+    if (!pos[0]) { console.log(g); break; }
+    const m = new RegExp(`\\n## ${pos[0]}\\b[\\s\\S]*?(?=\\n## |$)`).exec(g);
+    if (!m) die(`no topic ${pos[0]}; topics: workflow blocks objects rich criticmarkup export api`);
+    console.log(m![0].trim()); break;
+  }
   case "serve": { const { startServer } = await import("./server.ts"); const s = startServer(Number(process.env.MYD_PORT ?? 7474)); console.log(`myd server on http://localhost:${s.port}`); break; }
   case "status": { const s = await serverAlive(); out(s ?? { running: false }, s ? `running on port ${s.port} (pid ${s.pid})` : "not running"); break; }
   case "stop": { const s = await serverAlive(); if (s) { try { process.kill(s.pid); } catch {} } out({ stopped: !!s }, s ? "stopped" : "not running"); break; }
