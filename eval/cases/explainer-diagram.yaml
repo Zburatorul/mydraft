@@ -1,0 +1,23 @@
+id: explainer-diagram
+title: Explainer with a message-flow diagram → mermaid fence in a .md, reviewed in myd (not ASCII in chat)
+agents: [claude, codex]
+prompt: |
+  Explain how a Raft cluster elects a leader after the current leader dies — walk me through the timeline with a diagram of the message flow. I'll want to go through it with you afterwards. Work in __WORK__.
+journey:
+  - on: wait 1
+    do:
+      - annotate: { paragraph: 1, words: 5, body: "Can you expand on this — what's the concrete risk here?" }
+      - done: "Left one comment inline. Otherwise good."
+  - on: wait 2
+    do:
+      - done: "Thanks, that addresses it. Done."
+expect:
+  - wrote_md
+  - view_wait
+  - no_roughdraft
+  - no_ascii_diagram
+  - mermaid_in_doc
+  - comments_first
+  - reply_or_resolve
+  - no_marker_hand_edit
+  - reopen_after_handling

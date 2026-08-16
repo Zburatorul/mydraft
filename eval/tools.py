@@ -4,6 +4,21 @@ import sys, json
 for line in open(sys.argv[1]):
     try: ev = json.loads(line)
     except: continue
+    # --- codex exec --json ---
+    if ev.get("type") in ("item.completed", "item.started"):
+        it = ev.get("item", {}); t = it.get("type")
+        if t == "command_execution" and ev["type"] == "item.completed" and it.get("id") in globals().setdefault("_seen", set()): continue
+        if t == "command_execution" and ev["type"] == "item.started": globals().setdefault("_seen", set()).add(it.get("id"))
+        if t != "command_execution" and ev["type"] == "item.started": continue
+        if t == "command_execution":
+            cmd = it.get("command", ""); import re as _re
+            m = _re.match(r"^/bin/bash -lc '(.*)'$", cmd, _re.S); cmd = m.group(1) if m else cmd
+            print(f"Bash   {cmd.replace(chr(10), ' ⏎ ')[:600]}")
+        elif t == "file_change":
+            for ch in it.get("changes", []): print(f"{'Write' if ch.get('kind') in ('add','create') else 'Edit':6} {ch.get('path','')}")
+        elif t == "agent_message":
+            print(f"TEXT   {it.get('text','').strip()[:160]!r}")
+        continue
     if ev.get("type") != "assistant": continue
     for c in ev.get("message", {}).get("content", []):
         if c.get("type") == "tool_use":

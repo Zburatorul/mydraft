@@ -1,0 +1,20 @@
+id: suggestion-apply
+title: User leaves a substitution suggestion → agent applies it to the source (or declines with a reason) and resolves
+agents: [claude, codex]
+fixture: draft.md
+prompt: |
+  Open __WORK__/draft.md for me to review; I'll suggest some edits and you apply the ones you agree with.
+journey:
+  - on: wait 1
+    do:
+      - suggest: { paragraph: 1, words: 4, replacement: "Our CI spend has roughly doubled", note: "softer wording" }
+      - done: "One suggestion inline."
+  - on: wait 2
+    do:
+      - done: "Done."
+expect:
+  - view_wait
+  - comments_first
+  - suggestion_handled       # source now contains the replacement text, or a reply on s1 explains why not
+  - no_marker_hand_edit
+  - reopen_after_handling

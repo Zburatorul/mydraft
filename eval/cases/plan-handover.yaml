@@ -1,0 +1,22 @@
+id: plan-handover
+title: User asks for a plan and wants to look it over → agent writes .md, opens myd, handles one comment, hands back
+agents: [claude, codex]
+prompt: |
+  I'm thinking of migrating my personal notes from Obsidian to a plain folder-of-markdown-plus-git setup. Put together a plan for me covering what I'd lose, what I'd gain, and the migration steps, and let me look it over before you do anything. Work in __WORK__.
+journey:
+  - on: wait 1
+    do:
+      - annotate: { paragraph: 1, words: 5, body: "Can you expand on this — what's the concrete risk here?" }
+      - done: "Left one comment inline. Otherwise good."
+  - on: wait 2
+    do:
+      - done: "Thanks, that addresses it. Done."
+expect:
+  - wrote_md
+  - view_wait
+  - no_roughdraft
+  - comments_first
+  - reply_or_resolve
+  - no_marker_hand_edit
+  - reopen_after_handling
+  - guidance_consulted     # skill loaded or myd help/guide read — informational, not required

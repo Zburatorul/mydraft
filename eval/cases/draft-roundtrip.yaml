@@ -1,0 +1,28 @@
+id: draft-roundtrip
+title: Existing draft, user will flag disagreements → open in myd, comment needs info the agent lacks → ask in-thread, not fabricate; resolve after user answers
+agents: [claude, codex]
+fixture: draft.md
+prompt: |
+  There's a draft at __WORK__/draft.md. I want to go through it together — I'll flag the bits I disagree with and you fix them.
+journey:
+  - on: wait 1
+    do:
+      - annotate: { paragraph: 1, words: 5, body: "Where does this number come from? I don't think it's right." }
+      - done: "Left one comment inline."
+  - on: wait 2
+    do:
+      - reply: { to: c1, body: "It's from the June invoice: $1,940 vs $980 in December. Mostly matrix builds on PRs." }
+      - done: "Answered your question in the thread."
+  - on: wait 3
+    do:
+      - done: "Looks good now."
+expect:
+  - view_wait
+  - no_roughdraft
+  - comments_first
+  - reply_or_resolve
+  - asked_in_thread          # the agent's first reply must be a question in-thread, not a fabricated number
+  - no_marker_hand_edit
+  - reopen_after_handling
+  - resolved: c1
+  - doc_not_fabricated       # draft must not contain invented dollar figures before wait 2

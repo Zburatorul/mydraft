@@ -1,0 +1,21 @@
+id: object-comment
+title: User comments on a diagram node → agent interprets the @block›node anchor and edits that diagram block
+agents: [claude, codex]
+fixture: pipeline.md
+prompt: |
+  Have a look at __WORK__/pipeline.md with me — I have questions about the diagram.
+journey:
+  - on: wait 1
+    do:
+      - object: { block: flow, target: "node:Cache", body: "Why is there a cache between the API and the DB? Remove it unless it's needed." }
+      - done: "Question on the diagram."
+  - on: wait 2
+    do:
+      - done: "Good."
+expect:
+  - view_wait
+  - comments_first
+  - reply_or_resolve
+  - block_edited: flow       # the {#flow} mermaid block changed (cache removed or justified via reply)
+  - no_marker_hand_edit
+  - reopen_after_handling
