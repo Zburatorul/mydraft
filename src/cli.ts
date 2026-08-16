@@ -63,6 +63,7 @@ const HELP = `myd — Markdown viewer + annotations + agent CLI
   myd set-block <file.md> <id> [--file F]   replace a block's source with stdin (or --file)
   myd insert <file.md> <id> [--file F]      insert stdin after block <id> (--before to insert before)
   myd shot <file.md> [out.png] [--width W]  screenshot the rendered document (headless Chrome)
+  myd export <file.md> [out.html]           single self-contained HTML (delivery artifact)
   myd diff <old.md> <new.md> [out.md]       CriticMarkup diff between two versions
   myd serve                                 run the server in the foreground
   myd status | stop
@@ -115,6 +116,11 @@ switch (cmd) {
     execFileSync(chrome!, ["--headless=new", "--disable-gpu", "--no-sandbox", "--hide-scrollbars", `--user-data-dir=${udd}`, `--window-size=${width},${height}`, "--virtual-time-budget=4000", `--screenshot=${outPng}`, url], { stdio: "ignore" });
     fs.rmSync(udd, { recursive: true, force: true });
     out({ png: outPng }, outPng); break;
+  }
+  case "export": {
+    const file = abs(pos[0]); const { exportHtml } = await import("./export.ts");
+    const doc = loadDoc(file, fs.readFileSync(file, "utf8")); const outHtml = pos[1] ? path.resolve(pos[1]) : file.replace(/\.md$/, ".html");
+    fs.writeFileSync(outHtml, await exportHtml(doc)); out({ html: outHtml }, outHtml); break;
   }
   case "diff": { const r = Bun.spawnSync(["python3", path.join(ROOT, "bin/rd-diff"), ...pos], { stdout: "inherit", stderr: "inherit" }); process.exit(r.exitCode); }
   default: die(`unknown command: ${cmd}\n\n${HELP}`);
