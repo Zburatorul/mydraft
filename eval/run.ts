@@ -108,6 +108,8 @@ const CHECKS: Record<string, (ctx: Ctx, arg?: any) => boolean | "n/a"> = {
   no_ascii_diagram: (ctx) => !ctx.tools.some((t) => t.name === "TEXT" && /(\+-{3,}\+|┌|──►|─┐|│.*│.*│)/.test(t.s)),
   mermaid_in_doc: (ctx) => mdFiles(ctx).some((s) => /```mermaid/.test(s)),
   asked_in_thread: (ctx) => bash(ctx, /myd reply .*\?/).length > 0,
+  // replied on c1 with a question, or edited the block conservatively (no invented figures) and replied on c1
+  asked_or_hedged_in_thread: (ctx) => bash(ctx, /myd reply .* c1 .*\?/).length > 0 || (bash(ctx, /myd reply .* c1 /).length > 0 && CHECKS.doc_not_fabricated!(ctx) === true),
   // body of the doc as it stood after the agent's first pass (snapshot taken at wait 2, before the user's answer), endmatter and inline comments stripped
   doc_not_fabricated: (ctx) => { const s = (ctx.snapshots[2] ?? ctx.snapshots[1] ?? "").split(/\n---\n(?=comments:|suggestions:)/)[0]!; return !/\$\s?\d{2,}|\d+\s?%/.test(s.replace(/\{>>[\s\S]*?<<\}/g, "")); },
   resolved: (ctx, id) => mdFiles(ctx).some((s) => new RegExp(`\\n  ${id}:\\n(?:    [^\\n]*\\n)*?    status: resolved`).test(s)),

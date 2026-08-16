@@ -21,7 +21,7 @@ expect:
   - no_roughdraft
   - comments_first
   - reply_or_resolve
-  - asked_in_thread          # the agent's first reply must be a question in-thread, not a fabricated number
+  - asked_or_hedged_in_thread  # first pass: ask in-thread, or hedge/remove the claim and explain in-thread — never fabricate
   - no_marker_hand_edit
   - reopen_after_handling
   - resolved: c1
