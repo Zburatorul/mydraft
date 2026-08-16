@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""rd-diff: show what changed between two versions of a Markdown file as CriticMarkup,
+so the reviewer can see agent edits in Roughdraft ({++added++} / {--removed--}).
+
+Usage: rd-diff OLD.md NEW.md [OUT.md]     (default OUT = NEW with .diff.md suffix)
+Paragraph-granular; list items and table rows are diffed line-by-line.
+Existing CriticMarkup in OLD is stripped; NEW's comments/endmatter are preserved.
+"""
+import re, sys, difflib, datetime, pathlib
+
+def strip_critic(md):
+    md = re.sub(r"\{==(.*?)==\}\{>>.*?<<\}(\{id=[^}]*\})?", r"\1", md, flags=re.S)
+    md = re.sub(r"\{>>.*?<<\}(\{id=[^}]*\})?", "", md, flags=re.S)
+    md = re.sub(r"\{==(.*?)==\}", r"\1", md, flags=re.S)
+    return md
+
+def units(md):
+    out = []
+    for blk in re.split(r"\n\s*\n", md.strip()):
+        blk = blk.strip()
+        if not blk: continue
+        if blk.startswith("|") or re.match(r"^(\d+\.|[-*])\s", blk):
+            out += [l for l in blk.split("\n") if l.strip()]
+        else:
+            out.append(blk)
+    return out
+
+def split_endmatter(md):
+    m = re.search(r"\n---\n(?=comments:|suggestions:)", md)
+    return (md[:m.start()], md[m.start():]) if m else (md, "")
+
+old_p, new_p = sys.argv[1], sys.argv[2]
+out_p = sys.argv[3] if len(sys.argv) > 3 else re.sub(r"\.md$", "", new_p) + ".diff.md"
+old_body, _ = split_endmatter(open(old_p).read())
+new_body, new_end = split_endmatter(open(new_p).read())
+a, b = units(strip_critic(old_body)), units(strip_critic(new_body))
+
+sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+out, n = [], 0
+def tag(kind, txt):
+    global n; n += 1
+    return "{%s%s%s}{#s%d}" % (kind, txt, kind, n)
+for op, i1, i2, j1, j2 in sm.get_opcodes():
+    if op == "equal": out += b[j1:j2]
+    if op in ("delete", "replace"): out += [tag("--", p) for p in a[i1:i2]]
+    if op in ("insert", "replace"): out += [tag("++", p) for p in b[j1:j2]]
+
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+header = ("> **Diff view:** `%s` → `%s`. Green = added, red = removed, unmarked = unchanged "
+          "(paragraph granularity).\n\n" % (pathlib.Path(old_p).name, pathlib.Path(new_p).name))
+end = new_end.rstrip("\n")
+if "suggestions:" in end:
+    end += "\n"
+else:
+    end = (end + "\nsuggestions:\n") if end else "\n---\nsuggestions:\n"
+end += "".join('  s%d:\n    by: rd-diff\n    at: "%s"\n' % (i, now) for i in range(1, n + 1))
+open(out_p, "w").write(header + "\n\n".join(out) + "\n" + end)
+print(out_p)
+sys.stderr.write("%d added, %d removed units\n" % (
+    sum(1 for u in out if u.startswith("{++")), sum(1 for u in out if u.startswith("{--"))))

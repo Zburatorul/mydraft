@@ -1,0 +1,34 @@
+#!/usr/bin/env node
+// rd-shot: screenshot a Markdown file as rendered by the running Roughdraft server.
+// Usage: rd-shot /abs/path/file.md [out.png] [--width 1200]
+// Prints the output path. Uses the Playwright bundled with the global roughdraft install.
+import fs from "node:fs";
+import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
+
+const args = process.argv.slice(2);
+const file = args[0];
+if (!file) { console.error("usage: rd-shot <file.md> [out.png] [--width N]"); process.exit(2); }
+const abs = path.resolve(file);
+const wIdx = args.indexOf("--width");
+const width = wIdx >= 0 ? Number(args[wIdx + 1]) : 1200;
+const out = (args[1] && !args[1].startsWith("--")) ? path.resolve(args[1]) : abs.replace(/\.md$/, "") + ".png";
+
+// Locate playwright inside the global roughdraft package.
+const rdBin = execFileSync("which", ["roughdraft"], { encoding: "utf8" }).trim();
+const rdRoot = path.resolve(fs.realpathSync(rdBin), "../../../..");
+const require = createRequire(path.join(rdRoot, "package.json"));
+const pwDir = path.dirname(require.resolve("playwright/package.json"));
+const { chromium } = await import(path.join(pwDir, "index.mjs"));
+
+// Ensure server is up and get URL (open without watch).
+const url = execFileSync("roughdraft", ["open", abs, "--no-watch", "--print-url"], { encoding: "utf8" }).trim().split("\n").pop();
+
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width, height: 900 } });
+await page.goto(url, { waitUntil: "load" });
+await page.waitForTimeout(1500);
+await page.screenshot({ path: out, fullPage: true });
+await browser.close();
+console.log(out);

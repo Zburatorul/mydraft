@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# rd-open: open a Markdown file in Roughdraft and block until "Done Reviewing",
+# without crashing after 5 minutes (upstream issue #127: undici headers timeout).
+# Re-arms `roughdraft watch --timeout` in a loop until a review-completed event arrives.
+#
+# Usage: rd-open /abs/path/file.md
+set -euo pipefail
+f="${1:?usage: rd-open <file.md>}"
+f="$(realpath "$f")"
+slice="${RD_WATCH_SLICE:-240}"   # seconds per poll; must stay < 300
+
+# Open (non-blocking) so the browser tab appears / focuses.
+roughdraft open "$f" --no-watch --print-url
+echo "Waiting for Done Reviewing (polling every ${slice}s)..." >&2
+
+while true; do
+  set +e
+  out="$(roughdraft watch "$f" --timeout "$slice" --json 2>&1)"
+  rc=$?
+  set -e
+  if [ $rc -eq 0 ] && ! grep -q '"timedOut": *true' <<<"$out"; then
+    n=$(grep -o '"type"' <<<"$out" | wc -l)
+    echo "Review completed for $f ($n event(s))."
+    exit 0
+  fi
+  # rc 1 with timedOut → keep waiting; anything else → transient, retry after a beat
+  grep -q '"timedOut": *true' <<<"$out" || { echo "watch: $out" >&2; sleep 2; }
+done
