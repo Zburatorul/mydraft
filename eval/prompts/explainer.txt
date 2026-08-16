@@ -1,0 +1,1 @@
+Explain how a Raft cluster elects a leader after the current leader dies — walk me through the timeline with a diagram of the message flow. I'll want to go through it with you afterwards. Work in __WORK__.

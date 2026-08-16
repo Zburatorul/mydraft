@@ -1,4 +1,5 @@
 // myd viewer: render → hydrate rich blocks → paint highlights → capture annotations.
+import { isEditorSubmitShortcut } from "./shortcuts.js";
 const qs = new URLSearchParams(location.search);
 const docPath = qs.get("path");
 const $ = (s) => document.querySelector(s);
@@ -189,7 +190,11 @@ function openDialog(kind, rect) {
 }
 function closeEditor() { editor.hidden = true; pending = null; edTarget = null; getSelection()?.removeAllRanges(); }
 $("#edCancel").onclick = closeEditor;
-editor.addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") saveEditor(); if (e.key === "Escape") closeEditor(); });
+editor.addEventListener("keydown", (e) => {
+  const submit = isEditorSubmitShortcut(e);
+  if (submit) { e.preventDefault(); saveEditor(); }
+  if (e.key === "Escape") closeEditor();
+});
 $("#edSave").onclick = saveEditor;
 async function saveEditor() {
   const body = $("#edBody").value, repl = $("#edRepl").value;

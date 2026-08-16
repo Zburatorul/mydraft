@@ -1,0 +1,1 @@
+I'm thinking of migrating my personal notes from Obsidian to a plain folder-of-markdown-plus-git setup. Put together a plan for me covering what I'd lose, what I'd gain, and the migration steps, and let me look it over before you do anything. Work in __WORK__.
