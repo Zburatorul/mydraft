@@ -1,15 +1,49 @@
 // myd viewer: render → hydrate rich blocks → paint highlights → capture annotations.
 import { isEditorSubmitShortcut } from "./shortcuts.js";
+import { reviewPresentation } from "./review-state.js";
+import { revisionLabel, revisionTitle } from "./revision-label.js";
 const qs = new URLSearchParams(location.search);
 const docPath = qs.get("path");
+const reviewId = qs.get("review");
 const $ = (s) => document.querySelector(s);
 const docEl = $("#doc"), railEl = $("#threads"), statusEl = $("#status");
 let state = { version: null, items: [], html: "" };
+let reviewStatus = null;
 let ws;
 
 if (!docPath) { docEl.innerHTML = "<p>Open with <code>?path=/abs/file.md</code></p>"; throw new Error("no path"); }
-document.title = docPath.split("/").pop() + " · myd";
-$("#title").textContent = docPath.split("/").pop();
+const fileName = docPath.split("/").pop();
+document.title = fileName + " · myd";
+$("#title").textContent = fileName;
+
+function applyReviewStatus(status) {
+  reviewStatus = status;
+  const view = reviewPresentation(status, fileName, state.revision?.number);
+  document.documentElement.dataset.reviewState = view.deprecated ? "deprecated" : "active";
+  document.title = view.title;
+  const badge = $("#reviewState");
+  badge.hidden = !view.deprecated;
+  badge.textContent = view.label;
+  badge.title = view.deprecated ? "This tab is no longer the review tracked by the backend. Run myd view to start a fresh review." : "";
+  if (view.deprecated) { $("#popover").hidden = true; if (!$("#editor").hidden) closeEditor(); }
+  updateWriteControls();
+}
+
+function updateWriteControls() {
+  const disabled = reviewStatus ? !reviewStatus.tracked : true;
+  $("#doneBtn").disabled = disabled;
+  for (const el of document.querySelectorAll("#rail button, #rail input, .obj-comment")) el.disabled = disabled;
+}
+
+async function checkTracking() {
+  if (!state.version) return;
+  try {
+    const r = await fetch(`/api/tracking?path=${encodeURIComponent(docPath)}&review=${encodeURIComponent(reviewId ?? "")}&version=${encodeURIComponent(state.version)}`);
+    if (r.ok) applyReviewStatus(await r.json());
+  } catch {
+    // A network interruption is not evidence that this review was deprecated.
+  }
+}
 
 // ---------- load / render ----------
 let loadSeq = 0;
@@ -28,7 +62,9 @@ async function load() {
   paintHighlights();
   renderRail();
   window.scrollTo(0, y);
-  statusEl.textContent = `v${data.version}`;
+  statusEl.textContent = revisionLabel(data.revision, data.version);
+  statusEl.title = revisionTitle(data.revision, data.version);
+  await checkTracking();
 }
 
 function fixRelativeImages() {
@@ -152,6 +188,7 @@ let pending = null;
 document.addEventListener("mouseup", () => setTimeout(captureSelection, 0));
 document.addEventListener("keyup", (e) => { if (e.key === "Escape") { popover.hidden = true; } });
 function captureSelection() {
+  if (!reviewStatus?.tracked) return;
   const sel = getSelection();
   if (!sel || sel.isCollapsed || !docEl.contains(sel.anchorNode)) { if (editor.hidden) popover.hidden = true; return; }
   const range = sel.getRangeAt(0);
@@ -197,17 +234,18 @@ editor.addEventListener("keydown", (e) => {
 });
 $("#edSave").onclick = saveEditor;
 async function saveEditor() {
+  if (!reviewStatus?.tracked) return;
   const body = $("#edBody").value, repl = $("#edRepl").value;
   if (edTarget?.kind === "object") {
     if (!body.trim()) return;
-    const r = await fetch("/api/annotate-object", { method: "POST", body: JSON.stringify({ path: docPath, version: state.version, bid: edTarget.blockEl.dataset.bid, target: edTarget.target, body, by: "user" }) });
+    const r = await fetch("/api/annotate-object", { method: "POST", body: JSON.stringify({ path: docPath, reviewId, version: state.version, bid: edTarget.blockEl.dataset.bid, target: edTarget.target, body, by: "user" }) });
     if (!r.ok) alert("Failed to save comment");
     closeEditor(); return;
   }
   if (!pending) return;
   const isSug = edMode === "suggest";
   if (!isSug && !body.trim()) return;
-  const payload = { path: docPath, version: state.version, ...pending, kind: isSug ? "suggestion" : "comment", body, replacement: repl, note: body, by: "user" };
+  const payload = { path: docPath, reviewId, version: state.version, ...pending, kind: isSug ? "suggestion" : "comment", body, replacement: repl, note: body, by: "user" };
   const r = await fetch("/api/annotate", { method: "POST", body: JSON.stringify(payload) });
   if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || "Failed to save annotation"); if (r.status === 409) load(); }
   closeEditor();
@@ -215,6 +253,7 @@ async function saveEditor() {
 document.addEventListener("mousedown", (e) => { if (!editor.hidden && !editor.contains(e.target) && !popover.contains(e.target)) { /* keep open while user reselects? close for simplicity */ if (!$("#edBody").value && !$("#edRepl").value) closeEditor(); } });
 
 function objectComment(blockEl, target, evt) {
+  if (!reviewStatus?.tracked) return;
   edMode = "comment"; edTarget = { kind: "object", blockEl, target }; pending = null;
   $("#edAnchor").textContent = target ? `${blockEl.dataset.bid} › ${target}` : `${blockEl.dataset.bid} (whole block)`; $("#edAnchor").hidden = false;
   $("#edRepl").hidden = true; $("#edBody").value = ""; $("#edBody").placeholder = "Comment…";
@@ -241,8 +280,9 @@ function renderRail() {
     </div>`;
   }).join("") || "<p class='muted'>Select text to comment or suggest. Click 💬 on a diagram or a diagram node to comment on it.</p>";
   railEl.querySelectorAll(".thread").forEach((t) => t.addEventListener("click", (e) => { if (e.target.closest("form,button")) return; scrollToItem(t.dataset.id); }));
-  railEl.querySelectorAll("[data-resolve]").forEach((b) => b.onclick = async () => { await fetch("/api/resolve", { method: "POST", body: JSON.stringify({ path: docPath, id: b.dataset.resolve, by: "user" }) }); });
-  railEl.querySelectorAll(".replyForm").forEach((f) => f.onsubmit = async (e) => { e.preventDefault(); const m = f.querySelector("input").value.trim(); if (!m) return; await fetch("/api/reply", { method: "POST", body: JSON.stringify({ path: docPath, id: f.dataset.id, message: m, by: "user" }) }); });
+  railEl.querySelectorAll("[data-resolve]").forEach((b) => b.onclick = async () => { await fetch("/api/resolve", { method: "POST", body: JSON.stringify({ path: docPath, reviewId, version: state.version, id: b.dataset.resolve, by: "user" }) }); });
+  railEl.querySelectorAll(".replyForm").forEach((f) => f.onsubmit = async (e) => { e.preventDefault(); const m = f.querySelector("input").value.trim(); if (!m) return; await fetch("/api/reply", { method: "POST", body: JSON.stringify({ path: docPath, reviewId, version: state.version, id: f.dataset.id, message: m, by: "user" }) }); });
+  updateWriteControls();
 }
 function focusThread(id) { const t = railEl.querySelector(`.thread[data-id="${id}"]`); if (!t) return; railEl.querySelectorAll(".thread").forEach((x) => x.classList.remove("focus")); t.classList.add("focus"); t.scrollIntoView({ block: "nearest", behavior: "smooth" }); }
 function scrollToItem(id) {
@@ -255,18 +295,30 @@ function scrollToItem(id) {
 function escape(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
 // ---------- done ----------
-$("#doneBtn").onclick = () => $("#doneDlg").showModal();
+$("#doneBtn").onclick = () => { if (reviewStatus?.tracked) $("#doneDlg").showModal(); };
 $("#doneDlg").addEventListener("close", async () => {
   if ($("#doneDlg").returnValue !== "ok") return;
-  await fetch("/api/done", { method: "POST", body: JSON.stringify({ path: docPath, note: $("#doneNote").value, by: "user" }) });
+  const r = await fetch("/api/done", { method: "POST", body: JSON.stringify({ path: docPath, reviewId, version: state.version, note: $("#doneNote").value, by: "user" }) });
+  if (!r.ok) { await checkTracking(); return; }
+  const data = await r.json();
   $("#doneNote").value = ""; statusEl.textContent = "sent ✓";
+  applyReviewStatus(data.tracking);
 });
 
 // ---------- live ----------
 function connect() {
   ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?path=${encodeURIComponent(docPath)}`);
-  ws.onmessage = (e) => { if (e.data === "pong") return; const m = JSON.parse(e.data); if (m.type === "changed") load(); };
+  ws.onmessage = (e) => {
+    if (e.data === "pong") return;
+    const m = JSON.parse(e.data);
+    if (m.type === "changed") load();
+    if (m.type === "done" || m.type === "tracking-changed") checkTracking();
+  };
   ws.onclose = () => setTimeout(connect, 1000);
   setInterval(() => { try { ws.send("ping"); } catch {} }, 20000);
 }
+const trackingTimer = setInterval(checkTracking, 15000);
+window.addEventListener("focus", checkTracking);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) checkTracking(); });
+window.addEventListener("pagehide", () => clearInterval(trackingTimer));
 connect(); load();

@@ -33,7 +33,19 @@ async function ensureServer(): Promise<{ port: number }> {
   for (let i = 0; i < 40; i++) { await Bun.sleep(100); const a = await serverAlive(); if (a) return a; }
   die("could not start myd server"); return { port: 0 };
 }
-function docUrl(port: number, file: string) { return `http://localhost:${port}/?path=${encodeURIComponent(file)}`; }
+async function trackReview(port: number, file: string): Promise<{ reviewId: string }> {
+  const r = await fetch(`http://localhost:${port}/api/track`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path: file }),
+  });
+  if (!r.ok) die(`could not start review: ${(await r.json().catch(() => ({})))?.error ?? r.statusText}`);
+  return r.json() as Promise<{ reviewId: string }>;
+}
+function docUrl(port: number, file: string, reviewId?: string) {
+  const review = reviewId ? `&review=${encodeURIComponent(reviewId)}` : "";
+  return `http://localhost:${port}/?path=${encodeURIComponent(file)}${review}`;
+}
 function openBrowser(url: string) { try { spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref(); } catch {} }
 
 async function waitDone(port: number, file: string, timeoutSec?: number): Promise<any> {
@@ -122,9 +134,9 @@ switch (cmd) {
   case "status": { const s = await serverAlive(); out(s ?? { running: false }, s ? `running on port ${s.port} (pid ${s.pid})` : "not running"); break; }
   case "stop": { const s = await serverAlive(); if (s) { try { process.kill(s.pid); } catch {} } out({ stopped: !!s }, s ? "stopped" : "not running"); break; }
   case "view": {
-    const file = abs(pos[0]); const { port } = await ensureServer(); const url = docUrl(port, file);
+    const file = abs(pos[0]); const { port } = await ensureServer(); const { reviewId } = await trackReview(port, file); const url = docUrl(port, file, reviewId);
     if (!flags["no-open"]) openBrowser(url);
-    if (!flags.wait) { out({ url }, url); break; }
+    if (!flags.wait) { out({ url, reviewId }, url); break; }
     console.error(url); console.error("Waiting for Done Reviewing…");
     const ev = await waitDone(port, file, flags.timeout ? Number(flags.timeout) : undefined);
     out(ev, ev.timedOut ? "timed out" : `Review completed for ${file}${ev.note ? `\nNote: ${ev.note}` : ""}`);

@@ -16,10 +16,12 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 -apple-system, "Inter", system-ui, sans-serif; }
 #bar { position: sticky; top: 0; z-index: 5; display: flex; gap: 12px; align-items: center; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); font-size: 14px; }
-#title { font-weight: 600; } #status { color: var(--muted); font-size: 12px; }
+#title { font-weight: 600; } #status { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+#reviewState { color: #7a6544; background: #eee6d8; border: 1px solid #d9ccb7; border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 600; letter-spacing: .02em; }
 .spacer { flex: 1; }
 button { font: inherit; font-size: 13px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--fg); cursor: pointer; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { cursor: default; opacity: .48; }
 button.link { border: none; background: none; color: var(--accent); padding: 0 4px; }
 .toggle { color: var(--muted); font-size: 12px; display: flex; gap: 4px; align-items: center; }
 main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 24px; max-width: 1280px; margin: 0 auto; padding: 24px 16px 120px; }
@@ -93,3 +95,12 @@ dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 12px 0
 .replyForm { display: flex; gap: 4px; margin-top: 8px; } .replyForm input { margin: 0; padding: 4px 8px; font-size: 13px; }
 .obj-tag { font-family: ui-monospace, monospace; font-size: 11px; background: var(--code-bg); padding: 0 5px; border-radius: 4px; }
 .muted { color: var(--muted); font-size: 13px; }
+
+/* A retired review stays readable, but should not be mistaken for the live workspace. */
+html[data-review-state="deprecated"] body { background: color-mix(in srgb, var(--bg) 88%, #9f8968); }
+html[data-review-state="deprecated"] #bar,
+html[data-review-state="deprecated"] #doc,
+html[data-review-state="deprecated"] .thread { border-color: color-mix(in srgb, var(--line) 72%, #9f8968); }
+html[data-review-state="deprecated"] #doc { background: color-mix(in srgb, var(--panel) 94%, #9f8968); filter: saturate(.72); }
+html[data-review-state="deprecated"] #rail { opacity: .78; }
+html[data-review-state="deprecated"] #reviewState { display: inline-block; }
