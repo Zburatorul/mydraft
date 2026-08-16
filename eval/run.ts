@@ -20,7 +20,7 @@ const TIMEOUT = Number(flag("timeout") ?? 600) * 1000;
 const EVAL_HOME = path.join(OUT, ".myd-home"); const EVAL_PORT = Number(flag("port") ?? 7575);
 const EVAL_ENV = { ...process.env, MYD_HOME: EVAL_HOME, MYD_PORT: String(EVAL_PORT), MYD_NO_OPEN: "1" };
 
-type Case = { id: string; title: string; agents: string[]; prompt: string; fixture?: string; journey: Array<{ on: string; do: any[] }>; expect: Array<string | Record<string, any>> };
+type Case = { id: string; title: string; agents: string[]; prompt: string; fixture?: string; journey: Array<{ on: string; if?: string; do: any[] }>; expect: Array<string | Record<string, any>> };
 type Tool = { name: string; s: string; extra?: any };
 
 // ---------- log parsing (claude stream-json | codex --json) ----------
@@ -68,24 +68,33 @@ async function api(p: string, body?: any) {
   const txt = await r.text(); try { return { ok: r.ok, data: JSON.parse(txt) }; } catch { return { ok: r.ok, data: txt }; }
 }
 async function doc(file: string) { return (await api(`/api/doc?path=${encodeURIComponent(file)}`)).data; }
-function nthParagraph(html: string, n: number) {
-  const re = /<p data-pos="(\d+-\d+)"[^>]*>([\s\S]*?)<\/p>/g; let m: RegExpExecArray | null, i = 0;
-  while ((m = re.exec(html))) { if (++i === n) return { pos: m[1]!, text: m[2]!.replace(/<[^>]+>/g, "") }; }
-  return null;
+/** Annotatable text candidates in document order: <p>/<li> blocks with ≥6 words of plain text (callout titles stripped). */
+function candidates(html: string) {
+  const out: Array<{ pos: string; text: string }> = [];
+  const re = /<(p|li) data-pos="(\d+-\d+)"[^>]*>([\s\S]*?)<\/\1>/g; let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    let inner = m[3]!.replace(/<span class="callout-title">[^<]*<\/span>/g, "").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/\s+/g, " ").trim();
+    if (inner.split(" ").length >= 6) out.push({ pos: m[2]!, text: inner });
+  }
+  return out;
 }
-// The server tracks reviews by id (myd view → POST /api/track). Headless, there is no human tab, so the
-// simulator opens its own review on the path (superseding the agent's, which nothing is looking at) and
-// acts under that id. `done` is path-scoped, so the agent's `--wait` still resolves.
-const reviewIds = new Map<string, string>();
-async function reviewId(file: string) {
-  if (!reviewIds.has(file)) { const r = await api("/api/track", { path: file }); if (r.ok && r.data?.reviewId) reviewIds.set(file, r.data.reviewId); }
-  return reviewIds.get(file);
-}
+function nthParagraph(html: string, n: number) { return candidates(html)[n - 1] ?? null; }
 async function act(file: string, a: any, log: (s: string) => void) {
   const rid = await reviewId(file);
   const d = await doc(file);
-  if (a.annotate) { const p = nthParagraph(d.html, a.annotate.paragraph ?? 1); if (!p) return log("no paragraph"); const anchor = p.text.split(/\s+/).slice(0, a.annotate.words ?? 5).join(" "); const r = await api("/api/annotate", { path: file, reviewId: rid, version: d.version, blockPos: p.pos, anchorText: anchor, prefix: "", kind: "comment", body: a.annotate.body, by: "user" }); log(`annotate "${anchor}" → ${r.ok}`); }
-  if (a.suggest) { const p = nthParagraph(d.html, a.suggest.paragraph ?? 1); if (!p) return log("no paragraph"); const anchor = p.text.split(/\s+/).slice(0, a.suggest.words ?? 4).join(" "); const r = await api("/api/annotate", { path: file, reviewId: rid, version: d.version, blockPos: p.pos, anchorText: anchor, prefix: "", kind: "suggestion", replacement: a.suggest.replacement, note: a.suggest.note, by: "user" }); log(`suggest "${anchor}"→"${a.suggest.replacement}" → ${r.ok}`); }
+  const tryAnchor = async (spec: any, kind: "comment" | "suggestion") => {
+    const cands = candidates(d.html).slice((spec.paragraph ?? 1) - 1, (spec.paragraph ?? 1) + 3);
+    if (!cands.length) return log("no annotatable text found");
+    for (const p of cands) {
+      const anchor = p.text.split(/\s+/).slice(0, spec.words ?? 5).join(" ");
+      const body = kind === "comment" ? { kind, body: spec.body } : { kind, replacement: spec.replacement, note: spec.note };
+      const r = await api("/api/annotate", { path: file, reviewId: rid, version: d.version, blockPos: p.pos, anchorText: anchor, prefix: "", ...body, by: "user" });
+      log(`${kind} "${anchor}" → ${r.ok}${r.ok ? "" : " " + JSON.stringify(r.data).slice(0, 80)}`);
+      if (r.ok) return;
+    }
+  };
+  if (a.annotate) await tryAnchor(a.annotate, "comment");
+  if (a.suggest) await tryAnchor(a.suggest, "suggestion");
   if (a.object) { const r = await api("/api/annotate-object", { path: file, reviewId: rid, version: d.version, bid: a.object.block, target: a.object.target, body: a.object.body, by: "user" }); log(`object ${a.object.block}›${a.object.target} → ${r.ok} ${JSON.stringify(r.data).slice(0, 80)}`); }
   if (a.reply) { const r = await api("/api/reply", { path: file, reviewId: rid, id: a.reply.to, message: a.reply.body, by: "user" }); log(`reply→${a.reply.to} → ${r.ok}`); }
   if (a.done !== undefined) { const r = await api("/api/done", { path: file, reviewId: rid, note: a.done, by: "user" }); log(`done "${a.done}" → ${r.ok} ${r.ok ? "" : JSON.stringify(r.data)}`); reviewIds.delete(file); }
@@ -100,7 +109,7 @@ const CHECKS: Record<string, (ctx: Ctx, arg?: any) => boolean | "n/a"> = {
   wrote_md: (ctx) => ctx.tools.some((t) => t.name === "Write" && t.s.endsWith(".md")) || bash(ctx, /cat >.*\.md|tee .*\.md/).length > 0,
   view_wait: (ctx) => ctx.tools.some(isViewWait),
   no_roughdraft: (ctx) => bash(ctx, /roughdraft open|rd-open/).length === 0,
-  comments_first: (ctx) => { const v = idx(ctx, isViewWait); const c = idx(ctx, (t) => t.name === "Bash" && /myd comments/.test(t.s)); const act = idx(ctx, (t) => (t.name === "Bash" && /myd (reply|resolve|set-block|insert)/.test(t.s)) || (t.name === "Edit" && t.s.endsWith(".md"))); return v >= 0 && c > v && (act < 0 || c < act); },
+  comments_first: (ctx) => { const v = idx(ctx, isViewWait); if (v < 0) return false; const after = ctx.tools.slice(v + 1); const c = after.findIndex((t) => t.name === "Bash" && /myd comments/.test(t.s)); const act = after.findIndex((t) => (t.name === "Bash" && /myd (reply|resolve|set-block|insert)/.test(t.s)) || (t.name === "Edit" && t.s.endsWith(".md"))); return c >= 0 && (act < 0 || c < act); },
   reply_or_resolve: (ctx) => bash(ctx, /myd (reply|resolve)/).length > 0,
   no_marker_hand_edit: (ctx) => !ctx.tools.some((t) => t.name === "Edit" && t.s.endsWith(".md") && /\{>>|\{==|\{~~|\{#[cs]\d|^comments:|^\s+c\d+:/m.test(t.extra ?? "")),
   reopen_after_handling: (ctx) => { const a = idx(ctx, (t) => t.name === "Bash" && /myd (reply|resolve|set-block|insert)/.test(t.s)); return a >= 0 && ctx.tools.slice(a + 1).some(isViewWait); },
@@ -112,7 +121,7 @@ const CHECKS: Record<string, (ctx: Ctx, arg?: any) => boolean | "n/a"> = {
   asked_or_hedged_in_thread: (ctx) => bash(ctx, /myd reply .* c1 .*\?/).length > 0 || (bash(ctx, /myd reply .* c1 /).length > 0 && CHECKS.doc_not_fabricated!(ctx) === true),
   // body of the doc as it stood after the agent's first pass (snapshot taken at wait 2, before the user's answer), endmatter and inline comments stripped
   // "before the user answered": end of turn 1 if the agent stopped to ask in chat, else the state at wait 2
-  doc_not_fabricated: (ctx) => { const s = (ctx.snapshots["turn1"] ?? ctx.snapshots[2] ?? ctx.snapshots[1] ?? "").split(/\n---\n(?=comments:|suggestions:)/)[0]!; return !/\$\s?\d{2,}|\d+\s?%/.test(s.replace(/\{>>[\s\S]*?<<\}/g, "")); },
+  doc_not_fabricated: (ctx) => { const s = (ctx.snapshots["preanswer"] ?? ctx.snapshots[2] ?? ctx.snapshots[1] ?? "").split(/\n---\n(?=comments:|suggestions:)/)[0]!; return !/\$\s?\d{2,}|\d+\s?%/.test(s.replace(/\{>>[\s\S]*?<<\}/g, "")); },
   question_or_hedge: (ctx) => bash(ctx, /myd reply .* c1 .*\?/).length > 0 || ctx.tools.some((t) => t.name === "TEXT" && /\?/.test(t.s) && /(figure|number|source|invoice|bill|doubled)/i.test(t.s)) || (bash(ctx, /myd reply .* c1 /).length > 0 && CHECKS.doc_not_fabricated!(ctx) === true),
   figures_applied: (ctx) => { const s = (mdFiles(ctx)[0] ?? "").split(/\n---\n(?=comments:|suggestions:)/)[0]!; return /1,?940/.test(s) && /980/.test(s); },
   resolved: (ctx, id) => mdFiles(ctx).some((s) => new RegExp(`\\n  ${id}:\\n(?:    [^\\n]*\\n)*?    status: resolved`).test(s)),
@@ -165,9 +174,16 @@ async function runOne(c: Case, agent: string) {
     clearTimeout(killer);
     // agent ended its turn: if the journey has a chat reply for this turn, resume the session with it
     resumeId = sessionId(agent, fs.readFileSync(logPath, "utf8"));
-    for (const f of fs.readdirSync(work).filter((f) => f.endsWith(".md"))) snapshots[`turn${turn}` as any] = fs.readFileSync(path.join(work, f), "utf8");
-    const chatStep = c.journey.find((j) => j.on === `turn ${turn}`)?.do.find((a: any) => a.chat);
-    if (!chatStep || !resumeId || Date.now() - t0 > TIMEOUT) break;
+    const toolsNow = parseTools(fs.readFileSync(logPath, "utf8"));
+    const lastText = [...toolsNow].reverse().find((t) => t.name === "TEXT")?.s ?? "";
+    const endedOnQuestion = /\?\s*$/.test(lastText.trim()) || /\?/.test(lastText.split("\n").slice(-2).join(" "));
+    // pre-answer state: if the agent never handed back after wait 1, the doc as it stands now; else the snapshot taken at wait 2
+    if (seen < 2) for (const f of fs.readdirSync(work).filter((f) => f.endsWith(".md"))) snapshots["preanswer"] = fs.readFileSync(path.join(work, f), "utf8");
+    else if (snapshots[2] && !snapshots["preanswer"]) snapshots["preanswer"] = snapshots[2];
+    const step = c.journey.find((j) => j.on === `turn ${turn}`);
+    const chatStep = step?.do.find((a: any) => a.chat);
+    const cond = step?.if ?? "question";
+    if (!chatStep || !resumeId || Date.now() - t0 > TIMEOUT || (cond === "question" && !endedOnQuestion)) break;
     simLog(`turn ${turn} ended; user replies in chat: "${chatStep.chat}"`); turn++;
   }
 

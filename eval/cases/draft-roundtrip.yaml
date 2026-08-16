@@ -14,8 +14,9 @@ journey:
     do:
       - reply: { to: c1, body: "It's from the June invoice: $1,940 vs $980 in December. Mostly matrix builds on PRs." }
       - done: "Answered your question in the thread."
-  # branch B: agent ended its turn asking in chat → user answers in chat
+  # branch B: agent ended its turn asking in chat → user answers in chat (fires only if the turn ended on a question)
   - on: turn 1
+    if: question
     do:
       - chat: "It's from the June invoice: $1,940 vs $980 in December. Mostly matrix builds on PRs. Put that in and hand it back."
   - on: wait 3
