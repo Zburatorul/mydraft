@@ -66,12 +66,37 @@ const HELP = `myd — Markdown viewer + annotations + agent CLI
   myd export <file.md> [out.html]           single self-contained HTML (delivery artifact)
   myd diff <old.md> <new.md> [out.md]       CriticMarkup diff between two versions
   myd guide [topic]                         agent guide; topics: workflow blocks objects rich criticmarkup export api
+  myd install-prompt [--claude|--codex|--file F] [--remove]   idempotently (re)install the myd block into agent instruction files (default: both)
   myd serve                                 run the server in the foreground
   myd status | stop
 Flags: --json for machine output.`;
 
 switch (cmd) {
   case undefined: case "help": case "--help": console.log(HELP); break;
+  case "install-prompt": {
+    const block = fs.readFileSync(path.join(ROOT, "docs/prompt.md"), "utf8").trim();
+    const BEGIN = "<!-- myd:begin (managed by `myd install-prompt`; edit ~/LocalDev/mydraft/docs/prompt.md instead) -->", END = "<!-- myd:end -->";
+    const home = require("node:os").homedir();
+    const targets: string[] = [];
+    if (flags.file) targets.push(path.resolve(String(flags.file)));
+    else { if (flags.claude || !flags.codex) targets.push(path.join(home, ".claude/CLAUDE.md")); if (flags.codex || !flags.claude) targets.push(path.join(process.env.CODEX_HOME ?? path.join(home, ".codex"), "AGENTS.md")); }
+    const results: any[] = [];
+    for (const t of targets) {
+      fs.mkdirSync(path.dirname(t), { recursive: true });
+      const cur = fs.existsSync(t) ? fs.readFileSync(t, "utf8") : "";
+      const re = new RegExp(`\\n?${BEGIN.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n?`);
+      const had = re.test(cur);
+      let next = cur.replace(re, "\n");
+      // also strip a legacy unmanaged block (Roughdraft's, or an earlier hand-written myd block) that starts with a known heading
+      next = next.replace(/(^|\n)## (?:Roughdraft|myd — document review[^\n]*|Document review with myd[^\n]*)\n[\s\S]*?(?=\n## (?!myd)|$)/, "$1");
+      next = next.replace(/\n{3,}/g, "\n\n").trim();
+      if (!flags.remove) next = (next ? next + "\n\n" : "") + `${BEGIN}\n${block}\n${END}\n`; else next = next ? next + "\n" : "";
+      const changed = next !== cur;
+      if (changed) fs.writeFileSync(t, next);
+      results.push({ file: t, action: flags.remove ? (had ? "removed" : "absent") : had ? (changed ? "updated" : "unchanged") : "installed" });
+    }
+    out(results, results.map((r) => `${r.action.padEnd(9)} ${r.file}`).join("\n")); break;
+  }
   case "guide": {
     const g = fs.readFileSync(path.join(ROOT, "docs/agent-guide.md"), "utf8");
     if (!pos[0]) { console.log(g); break; }
