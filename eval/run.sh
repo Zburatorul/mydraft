@@ -17,10 +17,10 @@ PROMPT="$(sed "s|__WORK__|$WORK|g" "$PROMPT_FILE")"
   seen=0; port=$(python3 -c "import json;print(json.load(open('$HOME/.mydraft/server.json'))['port'])" 2>/dev/null || echo 7474)
   while true; do
     sleep 4
-    n=$(grep -c "myd view" "$LOG" 2>/dev/null); n=${n:-0}; n=${n%%[^0-9]*}; n=${n:-0}
+    n=$(python3 "$ROOT/eval/tools.py" "$LOG" 2>/dev/null | grep -cE '^Bash +.*myd view .*--wait'); n=${n:-0}
     if [ "$n" -gt "$seen" ]; then
       seen=$n; sleep 8   # give the viewer a moment
-      f=$(grep -o 'myd view [^ ]*' "$LOG" | tail -1 | awk '{print $3}' | tr -d '"\\')
+      f=$(python3 "$ROOT/eval/tools.py" "$LOG" | grep -E '^Bash +.*myd view .*--wait' | tail -1 | grep -oE 'myd view "?[^ "]+' | tail -1 | sed 's/myd view "\{0,1\}//')
       [ -f "$f" ] || f=$(ls -t "$WORK"/*.md 2>/dev/null | head -1)
       echo "$(date +%T) view #$seen detected for $f" >> "$SIM"
       port=$(python3 -c "import json;print(json.load(open('$HOME/.mydraft/server.json'))['port'])" 2>/dev/null || echo 7474)

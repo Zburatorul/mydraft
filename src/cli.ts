@@ -112,6 +112,8 @@ switch (cmd) {
   case "guide": {
     const g = fs.readFileSync(path.join(ROOT, "docs/agent-guide.md"), "utf8");
     if (!pos[0]) { console.log(g); break; }
+    const VERB_TOPIC: Record<string, string> = { view: "workflow", wait: "workflow", comments: "workflow", reply: "workflow", resolve: "workflow", diff: "workflow", shot: "workflow", blocks: "blocks", block: "blocks", "set-block": "blocks", insert: "blocks", export: "export", serve: "api", status: "api", annotate: "objects", comment: "objects", suggest: "objects", markup: "criticmarkup", mermaid: "rich", vega: "rich", html: "rich", math: "rich" };
+    if (VERB_TOPIC[pos[0]]) pos[0] = VERB_TOPIC[pos[0]]!;
     const m = new RegExp(`\\n## ${pos[0]}\\b[\\s\\S]*?(?=\\n## |$)`).exec(g);
     if (!m) die(`no topic ${pos[0]}; topics: workflow blocks objects rich criticmarkup export api`);
     console.log(m![0].trim()); break;
