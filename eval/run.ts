@@ -16,6 +16,9 @@ const which = argv[0] ?? "all";
 const agentSel = flag("agent") ?? "claude";
 const OUT = path.join(os.homedir(), "tmp/myd-eval");
 const TIMEOUT = Number(flag("timeout") ?? 600) * 1000;
+// Isolated myd instance for evals: own state dir + port, browser never opened. Never touches the user's server on 7474.
+const EVAL_HOME = path.join(OUT, ".myd-home"); const EVAL_PORT = Number(flag("port") ?? 7575);
+const EVAL_ENV = { ...process.env, MYD_HOME: EVAL_HOME, MYD_PORT: String(EVAL_PORT), MYD_NO_OPEN: "1" };
 
 type Case = { id: string; title: string; agents: string[]; prompt: string; fixture?: string; journey: Array<{ on: string; do: any[] }>; expect: Array<string | Record<string, any>> };
 type Tool = { name: string; s: string; extra?: any };
@@ -51,7 +54,14 @@ function parseTools(log: string): Tool[] {
 const isViewWait = (t: Tool) => t.name === "Bash" && /myd view .*--wait/.test(t.s);
 
 // ---------- myd API (the simulated human) ----------
-async function serverPort() { try { return JSON.parse(fs.readFileSync(path.join(os.homedir(), ".mydraft/server.json"), "utf8")).port; } catch { return 7474; } }
+async function serverPort() { return EVAL_PORT; }
+async function ensureEvalServer() {
+  try { const r = await fetch(`http://localhost:${EVAL_PORT}/api/health`, { signal: AbortSignal.timeout(500) }); if (r.ok) return; } catch {}
+  fs.mkdirSync(EVAL_HOME, { recursive: true });
+  const child = spawn(process.execPath, [path.join(ROOT, "src/server.ts")], { env: EVAL_ENV, detached: true, stdio: "ignore" }); child.unref();
+  for (let i = 0; i < 40; i++) { await Bun.sleep(100); try { const r = await fetch(`http://localhost:${EVAL_PORT}/api/health`); if (r.ok) return; } catch {} }
+  throw new Error("could not start eval myd server");
+}
 async function api(p: string, body?: any) {
   const port = await serverPort();
   const r = await fetch(`http://localhost:${port}${p}`, body ? { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } } : undefined);
@@ -116,9 +126,9 @@ async function runOne(c: Case, agent: string) {
   const simLog = (s: string) => fs.appendFileSync(simPath, `${new Date().toISOString().slice(11, 19)} ${s}\n`);
   const args = agent === "claude"
     ? ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose", "--max-turns", "40", "--allowedTools", "Bash,Read,Write,Edit,Skill,Glob,Grep"]
-    : ["codex", "exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-C", work, prompt];
+    : ["codex", "exec", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-c", "shell_environment_policy.inherit=all", "-C", work, prompt];
   const logFd = fs.openSync(logPath, "w");
-  const child = spawn(args[0]!, args.slice(1), { cwd: work, stdio: ["ignore", logFd, fs.openSync(path.join(work, "stderr.log"), "w")] });
+  const child = spawn(args[0]!, args.slice(1), { cwd: work, env: EVAL_ENV, stdio: ["ignore", logFd, fs.openSync(path.join(work, "stderr.log"), "w")] });
   let done = false; child.on("exit", () => { done = true; });
   const killer = setTimeout(() => { try { child.kill(); } catch {} }, TIMEOUT);
   // human simulator
@@ -155,6 +165,8 @@ const selected = which === "all" ? cases : cases.filter((c) => c.id === which);
 if (!selected.length) { console.error(`no case ${which}; have: ${cases.map((c) => c.id).join(", ")}`); process.exit(2); }
 const agents = agentSel === "both" ? ["claude", "codex"] : [agentSel];
 const jobs = selected.flatMap((c) => agents.filter((a) => c.agents.includes(a)).map((a) => ({ c, a })));
+await ensureEvalServer();
+console.error(`eval myd server on :${EVAL_PORT} (MYD_HOME=${EVAL_HOME}); browsers suppressed`);
 console.error(`running ${jobs.length} job(s): ${jobs.map((j) => `${j.a}/${j.c.id}`).join(", ")}`);
 const results = await Promise.all(jobs.map((j) => runOne(j.c, j.a)));
 // matrix

@@ -10,7 +10,7 @@ import { RevisionTracker, type RevisionSnapshot } from "./revision-tracker.ts";
 const ROOT = path.resolve(import.meta.dir, "..");
 const WEB = path.join(ROOT, "web");
 const NM = path.join(ROOT, "node_modules");
-export const STATE_DIR = path.join(os.homedir(), ".mydraft");
+export const STATE_DIR = process.env.MYD_HOME ?? path.join(os.homedir(), ".mydraft"); // MYD_HOME + MYD_PORT → an isolated instance (used by eval)
 export const STATE_FILE = path.join(STATE_DIR, "server.json");
 export const REVISION_FILE = path.join(STATE_DIR, "revisions.json");
 

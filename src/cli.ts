@@ -46,7 +46,7 @@ function docUrl(port: number, file: string, reviewId?: string) {
   const review = reviewId ? `&review=${encodeURIComponent(reviewId)}` : "";
   return `http://localhost:${port}/?path=${encodeURIComponent(file)}${review}`;
 }
-function openBrowser(url: string) { try { spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref(); } catch {} }
+function openBrowser(url: string) { if (process.env.MYD_NO_OPEN) return; try { spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref(); } catch {} }
 
 async function waitDone(port: number, file: string, timeoutSec?: number): Promise<any> {
   return new Promise((res, rej) => {
