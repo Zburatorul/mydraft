@@ -1,10 +1,10 @@
 # my{~~d demo: rich blocks + annotations~>d demo: rich blocks + annotations bleu blue blue, test~~}{#s2}
 
-Thi{==s paragra==}{>>test<<}{#c11}ph has **{==bold text==}{>>why bold?<<}{#c1}**, `inline code`, a [link](https://example.com), and inline math $\alpha + \beta = \gamma$.
+Thi{==s paragra==}{>>test<<}{#c11}ph h{==a==}{>>if my selection crosses in the next word which is bolded, the dialogue appears, but it wont let me save. find the bug.<<}{#c13}s **{==bold text==}{>>why bold?<<}{#c1}**, `inline code`, a [link](https://example.com), and inline math $\alpha + \beta = \gamma$.
 
 ## Diagram
 
-```mermaid
+```mermaid {#flow}
 graph LR
   A[Agent] -->|edits| F[(Markdown file)]
   F -->|renders| V[Viewer]
@@ -18,7 +18,7 @@ graph LR
 
 $$\int_0^1 x^2\,dx = \tfrac{1}{3}$$
 
-## Chart
+## Chart {#chart-section}
 
 ```vega-lite
 {"$schema":"https://vega.github.io/schema/vega-lite/v5.json","width":360,"height":180,
@@ -95,12 +95,16 @@ comments:
     at: 2026-08-16T04:00:34.470Z
     re: c5
   c8:
-    body: "Fixed both: Shiki dual-theme CSS was wired wrong (dark code now uses --shiki-dark + dark bg); the modal dialog is replaced by a small inline editor anchored under the selection (Ctrl+Enter saves, Esc cancels). Same inline editor for diagram-node/block comments."
+    body: "Fixed both: Shiki dual-theme CSS was wired wrong (dark code now uses
+      --shiki-dark + dark bg); the modal dialog is replaced by a small inline
+      editor anchored under the selection (Ctrl+Enter saves, Esc cancels). Same
+      inline editor for diagram-node/block comments."
     by: AI
     at: 2026-08-16T04:04:38.884Z
     re: c6
   c9:
-    body: Yes — that edge exists (V → F 'writes CriticMarkup'); the arrow just overlaps visually. Leaving as is.
+    body: Yes — that edge exists (V → F 'writes CriticMarkup'); the arrow just
+      overlaps visually. Leaving as is.
     by: AI
     at: 2026-08-16T04:04:39.220Z
     re: c5
@@ -115,10 +119,18 @@ comments:
     by: user
     at: 2026-08-16T04:15:52.895Z
   c12:
-    body: Added ◐ toggle in the top bar (persists in localStorage; re-renders Mermaid/Vega with the matching theme).
+    body: Added ◐ toggle in the top bar (persists in localStorage; re-renders
+      Mermaid/Vega with the matching theme).
     by: AI
     at: 2026-08-16T04:16:05.783Z
     re: c10
+  c13:
+    by: user
+    at: 2026-08-16T04:16:33.920Z
+  c14:
+    body: go on
+    by: user
+    at: 2026-08-16T04:16:51.274Z
 suggestions:
   s1:
     by: user

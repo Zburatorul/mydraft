@@ -91,7 +91,7 @@ export function startServer(port = 7474) {
         if (req.method === "POST" && p === "/api/annotate-object") {
           const b = await req.json();
           const doc = readDoc(b.path); requireVersion(doc, b.version);
-          const blk = topBlocks(doc).find((x) => x.id === b.bid);
+          const blk = topBlocks(doc).find((x) => x.id === b.bid || `b${x.index}` === b.bid);
           if (!blk) return json({ error: `no block ${b.bid}` }, 404);
           const next = annotateObject(doc, blk.end, b.body, { block: b.bid, ...(b.target ? { target: b.target } : {}) }, b.by);
           writeDoc(doc, next);

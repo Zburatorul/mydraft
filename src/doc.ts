@@ -70,7 +70,7 @@ export function serializeEndmatter(e: Endmatter): string {
 //  {==x==}      -> x          {>>c<<}  -> ""        {#c1} / {id="…"} -> ""
 //  {++x++}      -> x          {--x--}  -> x (kept, rendered struck via anchor)
 //  {~~a~>b~~}   -> a          (suggestion shown as annotation over the original)
-const MARKER_RE = /\{==([\s\S]*?)==\}|\{>>[\s\S]*?<<\}|\{#[A-Za-z0-9_-]+\}|\{id="[^"]*"(?:\s+[a-z]+="[^"]*")*\}|\{\+\+([\s\S]*?)\+\+\}|\{--([\s\S]*?)--\}|\{~~([\s\S]*?)~>[\s\S]*?~~\}/g;
+const MARKER_RE = /\{==([\s\S]*?)==\}|\{>>[\s\S]*?<<\}|\{#[cs][0-9]+\}|\{id="[^"]*"(?:\s+[a-z]+="[^"]*")*\}|\{\+\+([\s\S]*?)\+\+\}|\{--([\s\S]*?)--\}|\{~~([\s\S]*?)~>[\s\S]*?~~\}/g;
 
 type Seg = { cleanStart: number; origStart: number; len: number }; // copied runs
 

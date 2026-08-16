@@ -22,15 +22,20 @@ const RICH = new Set(["mermaid", "vega-lite", "vega", "chart", "html"]);
 
 /** mdast plugin: stash source offsets on every node's data.hProperties so they survive to hast. */
 function remarkPositions() {
-  return (tree: MdRoot) => {
+  return (tree: MdRoot, file: any) => {
+    (tree as any).__clean = String(file.value);
     visit(tree, (node: any) => {
       if (!node.position) return;
       const s = node.position.start.offset, e = node.position.end.offset;
       node.data ??= {};
       node.data.hProperties = { ...(node.data.hProperties ?? {}), "data-pos": `${s}-${e}` };
     });
-    // block ids = index among top-level children (same scheme as `myd blocks`)
-    tree.children.forEach((child: any, i) => { child.data ??= {}; child.data.hProperties = { ...(child.data.hProperties ?? {}), "data-bid": `b${i}` }; });
+    // block ids = name ({#name}) or index among top-level children (same scheme as `myd blocks`)
+    tree.children.forEach((child: any, i) => {
+      const name = blockName(child, String((tree as any).__clean ?? ""));
+      child.data ??= {}; child.data.hProperties = { ...(child.data.hProperties ?? {}), "data-bid": name ?? `b${i}`, ...(name ? { id: name } : {}) };
+      if (name && child.type === "heading") { const last = child.children[child.children.length - 1]; if (last?.type === "text") last.value = last.value.replace(/\s*\{#[A-Za-z][\w-]*\}\s*$/, ""); }
+    });
   };
 }
 
@@ -93,14 +98,21 @@ function getProcessor() {
   return processor!;
 }
 
-export type Block = { id: string; type: string; start: number; end: number; head: string };
+export type Block = { id: string; index: number; name: string | null; type: string; start: number; end: number; head: string };
 /** Top-level blocks of doc.body with ORIGINAL offsets (via clean→orig map), ids b0..bn matching data-bid. */
+/** Optional stable name for a block: heading `## Title {#name}`, or fence info string ```` ```mermaid {#name} ````. */
+export function blockName(c: any, clean: string): string | null {
+  if (c.type === "heading") { const m = /\{#([A-Za-z][\w-]*)\}\s*$/.exec(clean.slice(c.position.start.offset, c.position.end.offset)); return m ? m[1]! : null; }
+  if (c.type === "code") { const m = /\{#([A-Za-z][\w-]*)\}/.exec(c.meta ?? ""); return m ? m[1]! : null; }
+  return null;
+}
 export function topBlocks(doc: Doc): Block[] {
   const tree = unified().use(remarkParse).use(remarkFrontmatter, ["yaml"]).use(remarkGfm).use(remarkMath).parse(doc.clean) as MdRoot;
   return tree.children.map((c: any, i) => {
     const s = doc.cleanToOrig(c.position.start.offset), e = doc.cleanToOrig(c.position.end.offset);
     const type = c.type === "heading" ? `h${c.depth}` : c.type === "code" ? `code:${c.lang ?? ""}` : c.type === "paragraph" ? "para" : c.type;
-    return { id: `b${i}`, type, start: s, end: e, head: doc.body.slice(s, e).split("\n")[0]!.slice(0, 80) };
+    const name = blockName(c, doc.clean);
+    return { id: name ?? `b${i}`, index: i, name, type, start: s, end: e, head: doc.body.slice(s, e).split("\n")[0]!.slice(0, 80) };
   });
 }
 

@@ -92,10 +92,10 @@ switch (cmd) {
   }
   case "reply": { const file = abs(pos[0]); const doc = loadDoc(file, fs.readFileSync(file, "utf8")); fs.writeFileSync(file, replyDoc(doc, pos[1]!, pos.slice(2).join(" "), String(flags.by ?? "AI"))); out({ ok: true }, "replied"); break; }
   case "resolve": { const file = abs(pos[0]); const doc = loadDoc(file, fs.readFileSync(file, "utf8")); fs.writeFileSync(file, resolveDoc(doc, pos[1]!, String(flags.by ?? "AI"), undefined, flags.summary ? String(flags.summary) : undefined)); out({ ok: true }, "resolved"); break; }
-  case "blocks": { const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); out({ path: file, version: doc.version, blocks }, blocks.map((b) => `${b.id.padEnd(5)} ${b.type.padEnd(12)} ${b.head}`).join("\n")); break; }
-  case "block": { const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); const b = blocks.find((x) => x.id === pos[1]); if (!b) die(`no block ${pos[1]}`); process.stdout.write(doc.body.slice(b!.start, b!.end) + "\n"); break; }
+  case "blocks": { const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); out({ path: file, version: doc.version, blocks }, blocks.map((b) => `${b.id.padEnd(16)} ${b.type.padEnd(12)} ${b.head}`).join("\n")); break; }
+  case "block": { const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); const b = blocks.find((x) => x.id === pos[1] || `b${x.index}` === pos[1]); if (!b) die(`no block ${pos[1]}`); process.stdout.write(doc.body.slice(b!.start, b!.end) + "\n"); break; }
   case "set-block": case "insert": {
-    const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); const b = blocks.find((x) => x.id === pos[1]); if (!b) die(`no block ${pos[1]}`);
+    const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); const b = blocks.find((x) => x.id === pos[1] || `b${x.index}` === pos[1]); if (!b) die(`no block ${pos[1]}`);
     if (flags.version && flags.version !== doc.version) die(`version mismatch: file is ${doc.version}`, 3);
     const content = (flags.file ? fs.readFileSync(String(flags.file), "utf8") : await Bun.stdin.text()).replace(/\s+$/, "");
     let body: string;
