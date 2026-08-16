@@ -95,6 +95,18 @@ switch (cmd) {
       if (changed) fs.writeFileSync(t, next);
       results.push({ file: t, action: flags.remove ? (had ? "removed" : "absent") : had ? (changed ? "updated" : "unchanged") : "installed" });
     }
+    // skill: symlink the repo's skill/ dir into each agent's skills directory (live-updating)
+    const skillSrc = path.join(ROOT, "skill");
+    const skillTargets = flags.file ? [] : [ ...((flags.claude || !flags.codex) ? [path.join(home, ".claude/skills/myd")] : []), ...((flags.codex || !flags.claude) ? [path.join(process.env.CODEX_HOME ?? path.join(home, ".codex"), "skills/myd")] : []) ];
+    for (const t of skillTargets) {
+      fs.mkdirSync(path.dirname(t), { recursive: true });
+      const exists = fs.existsSync(t) || (() => { try { fs.lstatSync(t); return true; } catch { return false; } })();
+      if (flags.remove) { if (exists) fs.rmSync(t, { recursive: true, force: true }); results.push({ file: t, action: exists ? "removed" : "absent" }); continue; }
+      let isLink = false; try { isLink = fs.lstatSync(t).isSymbolicLink() && fs.realpathSync(t) === fs.realpathSync(skillSrc); } catch {}
+      if (isLink) { results.push({ file: t, action: "unchanged" }); continue; }
+      if (exists) fs.rmSync(t, { recursive: true, force: true });
+      fs.symlinkSync(skillSrc, t); results.push({ file: t, action: "linked" });
+    }
     out(results, results.map((r) => `${r.action.padEnd(9)} ${r.file}`).join("\n")); break;
   }
   case "guide": {

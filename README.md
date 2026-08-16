@@ -8,4 +8,4 @@ Small tools that make Roughdraft (`npm i -g roughdraft`) usable for human–agen
 | `bin/rd-shot FILE.md [OUT.png]` | Screenshot the rendered doc (headless Playwright, uses roughdraft's bundled browser). |
 | `bin/rd-diff OLD.md NEW.md [OUT.md]` | CriticMarkup diff between two versions, viewable in Roughdraft. |
 
-Agent instructions: `docs/prompt.md` is the canonical block; `myd install-prompt` installs/updates it idempotently in `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` (marker-delimited; `--remove` to uninstall; `--file F` for other agents). Deep docs: `myd guide <topic>` ← `docs/agent-guide.md`.
+Agent integration (three rungs, all installed idempotently by `myd install-prompt`): `docs/prompt.md` → ~100-word always-loaded pointer in `~/.claude/CLAUDE.md` + `~/.codex/AGENTS.md` (marker-delimited); `skill/` → symlinked to `~/.claude/skills/myd` + `~/.codex/skills/myd` (SKILL.md workflow, references/agent-guide.md); `myd help` / `myd guide <topic>` from the CLI. `--remove` uninstalls all; `--file F` targets any other agent file.
