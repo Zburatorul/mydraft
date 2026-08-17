@@ -83,6 +83,7 @@ const HELP = `myd — Markdown viewer + annotations + agent CLI
   myd insert <file.md> <id> [--file F]      insert stdin after block <id> (--before to insert before)
   myd shot <file.md> [out.png] [--width W]  screenshot the rendered document (headless Chrome)
   myd export <file.md> [out.html]           single self-contained HTML (delivery artifact)
+  myd publish <file.md> [--output-dir DIR] [--profile NAME]   immutable release bundle + archive index
   myd diff <old.md> <new.md> [out.md]       CriticMarkup diff between two versions
   myd guide [topic]                         agent guide; topics: workflow blocks objects rich criticmarkup export api
   myd install-prompt [--claude|--codex|--file F] [--remove]   idempotently (re)install the myd block into agent instruction files (default: both)
@@ -189,6 +190,14 @@ switch (cmd) {
     const file = abs(pos[0]); const { exportHtml } = await import("./export.ts");
     const doc = loadDoc(file, fs.readFileSync(file, "utf8")); const outHtml = pos[1] ? path.resolve(pos[1]) : file.replace(/\.md$/, ".html");
     fs.writeFileSync(outHtml, await exportHtml(doc)); out({ html: outHtml }, outHtml); break;
+  }
+  case "publish": {
+    const file = abs(pos[0]); const { publishDocument } = await import("./publish.ts");
+    const result = await publishDocument(file, {
+      outputDir: flags["output-dir"] ? path.resolve(String(flags["output-dir"])) : undefined,
+      profile: flags.profile ? String(flags.profile) : undefined,
+    });
+    out(result, `Published ${result.releaseId}\nArtifact: ${result.artifactPath}\nManifest: ${result.manifestPath}`); break;
   }
   case "diff": { const r = Bun.spawnSync(["python3", path.join(ROOT, "bin/rd-diff"), ...pos], { stdout: "inherit", stderr: "inherit" }); process.exit(r.exitCode); }
   default: die(`unknown command: ${cmd}\n\n${HELP}`);

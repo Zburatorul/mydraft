@@ -69,6 +69,14 @@ ${scripts.map((s) => `<script>${s}</script>`).join("\n")}
 </body></html>`;
 }
 
+export function assertNoExportRenderErrors(html: string): void {
+  const article = /<article id="doc" class="markdown-body">([\s\S]*?)<\/article>/.exec(html)?.[1];
+  if (!article) throw new Error("server-render-errors check failed: exported document body is missing");
+  if (/<div class="rich-error">/.test(article)) {
+    throw new Error("server-render-errors check failed: the document contains an invalid rich block");
+  }
+}
+
 if (import.meta.main) {
   const [inp, outp] = process.argv.slice(2);
   if (!inp) { console.error("usage: bun src/export.ts in.md [out.html]"); process.exit(2); }
