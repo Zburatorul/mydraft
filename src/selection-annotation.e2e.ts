@@ -124,6 +124,45 @@ describe("cross-element annotation in a real browser", () => {
     await page.close();
   });
 
+  test("a reply draft keeps focus across a live document refresh", async () => {
+    const { fixture, page } = await trackedPage("reply-focus.md", SOURCE, { width: 1400, height: 900 });
+    await selectAcrossLink(page);
+    await page.locator('#popover [data-act="comment"]').click();
+    await page.locator("#edBody").fill("Comment that needs a reply.");
+    const saved = page.waitForResponse((response) => response.url().endsWith("/api/annotate") && response.request().method() === "POST");
+    await page.locator("#edSave").click();
+    await saved;
+
+    const reply = page.locator(".replyForm input").first();
+    await reply.waitFor();
+    await reply.click();
+    await reply.pressSequentially("Keep this draft", { delay: 60 });
+    expect(await reply.inputValue()).toBe("Keep this draft");
+    const inputBeforeRefresh = await reply.elementHandle();
+    const reloaded = page.waitForResponse((response) => response.url().includes("/api/doc?") && response.request().method() === "GET");
+    fs.appendFileSync(fixture, "\n");
+    await reloaded;
+    await page.waitForFunction((input) => !input.isConnected, inputBeforeRefresh);
+
+    expect(await reply.evaluate((input) => input === document.activeElement)).toBeTrue();
+    expect(await reply.inputValue()).toBe("Keep this draft");
+
+    await page.route("**/api/reply", async (route) => {
+      const response = await route.fetch();
+      await Bun.sleep(300);
+      await route.fulfill({ response });
+    });
+    const inputBeforeReply = await reply.elementHandle();
+    const replyReloaded = page.waitForResponse((response) => response.url().includes("/api/doc?") && response.request().method() === "GET");
+    const replySaved = page.waitForResponse((response) => response.url().endsWith("/api/reply") && response.request().method() === "POST");
+    await reply.press("Enter");
+    await replyReloaded;
+    await page.waitForFunction((input) => !input.isConnected, inputBeforeReply);
+    await replySaved;
+    expect(await reply.inputValue()).toBe("");
+    await page.close();
+  });
+
   test("a narrow explainer stacks timing lanes without horizontal overflow", async () => {
     const source = [
       "# Review: responsive explainer {#title}",

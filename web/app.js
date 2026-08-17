@@ -337,6 +337,15 @@ function objectComment(blockEl, target, evt, quote = null) {
 
 // ---------- rail ----------
 function renderRail() {
+  const replyState = new Map([...railEl.querySelectorAll(".replyForm")].map((form) => {
+    const input = form.querySelector("input");
+    return [form.dataset.id, {
+      value: input.value,
+      selectionStart: input.selectionStart,
+      selectionEnd: input.selectionEnd,
+      focused: input === document.activeElement,
+    }];
+  }));
   const showResolved = $("#showResolved").checked;
   const roots = state.items.filter((i) => i.kind !== "reply" && (showResolved || i.status !== "resolved"));
   const replies = (id) => state.items.filter((i) => i.kind === "reply" && i.parentId === id);
@@ -356,8 +365,13 @@ function renderRail() {
   }).join("") || "<p class='muted'>Select text to comment or suggest. Click 💬 on a diagram or a diagram node to comment on it.</p>";
   railEl.querySelectorAll(".thread").forEach((t) => t.addEventListener("click", (e) => { if (e.target.closest("form,button")) return; scrollToItem(t.dataset.id); }));
   railEl.querySelectorAll("[data-resolve]").forEach((b) => b.onclick = async () => { await fetch("/api/resolve", { method: "POST", body: JSON.stringify({ path: docPath, reviewId, version: state.version, id: b.dataset.resolve, by: "user" }) }); });
-  railEl.querySelectorAll(".replyForm").forEach((f) => f.onsubmit = async (e) => { e.preventDefault(); const m = f.querySelector("input").value.trim(); if (!m) return; await fetch("/api/reply", { method: "POST", body: JSON.stringify({ path: docPath, reviewId, version: state.version, id: f.dataset.id, message: m, by: "user" }) }); });
+  railEl.querySelectorAll(".replyForm").forEach((f) => f.onsubmit = async (e) => { e.preventDefault(); const input = f.querySelector("input"); const m = input.value.trim(); if (!m) return; const response = await fetch("/api/reply", { method: "POST", body: JSON.stringify({ path: docPath, reviewId, version: state.version, id: f.dataset.id, message: m, by: "user" }) }); const currentForm = [...railEl.querySelectorAll(".replyForm")].find((form) => form.dataset.id === f.dataset.id); const currentInput = currentForm?.querySelector("input"); if (response.ok && currentInput?.value.trim() === m) currentInput.value = ""; });
   updateWriteControls();
+  for (const form of railEl.querySelectorAll(".replyForm")) {
+    const saved = replyState.get(form.dataset.id); if (!saved) continue;
+    const input = form.querySelector("input"); input.value = saved.value;
+    if (saved.focused) { input.focus({ preventScroll: true }); input.setSelectionRange(saved.selectionStart, saved.selectionEnd); }
+  }
 }
 function focusThread(id) { const t = railEl.querySelector(`.thread[data-id="${id}"]`); if (!t) return; railEl.querySelectorAll(".thread").forEach((x) => x.classList.remove("focus")); t.classList.add("focus"); t.scrollIntoView({ block: "nearest", behavior: "smooth" }); }
 function scrollToItem(id) {
