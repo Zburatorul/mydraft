@@ -72,8 +72,8 @@ function blocksOf(file: string) {
 
 const HELP = `myd — Markdown viewer + annotations + agent CLI
 
-  myd view <file.md> [--wait] [--timeout S] [--no-open]   open in the viewer; --wait defaults to a 30-minute timeout
-  myd wait <file.md> [--timeout S]          block until Done Reviewing (default timeout: 1800 seconds)
+  myd view <file.md> [--wait] [--timeout S] [--no-open]   open and return; --wait is explicit synchronous mode
+  myd wait <file.md> [--timeout S]          explicit synchronous wait for Done (maximum default: 1800 seconds)
   myd comments <file.md> [--all]            pending review items (comments/suggestions/replies) as JSON
   myd reply <file.md> <id> <message>        append a reply (by AI)
   myd resolve <file.md> <id> [--summary S]  mark an item resolved

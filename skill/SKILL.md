@@ -8,12 +8,16 @@ description: Review, annotate, and discuss Markdown documents with the user thro
 When the user wants to review, comment on, or discuss a Markdown file (plans, research notes, explainers), use `myd` (on PATH; source `~/LocalDev/mydraft`). When asked for a plan or a design, write it as a Markdown file on disk first, then hand it over:
 
 ```bash
-myd view "/abs/file.md" --wait     # opens the viewer, blocks until the user clicks Done Reviewing (their note is printed)
-myd comments "/abs/file.md"        # what they left, in document order (--json for machine output)
+myd view "/abs/file.md"            # open the viewer, return immediately, then end this agent turn
+myd comments "/abs/file.md"        # next turn: read what the user left, in document order
 myd reply FILE c3 "…"  /  myd resolve FILE c3 [--summary "…"]
 ```
 
-Leave `--wait` running — its exit is your signal to resume. Then, in this order: **`myd comments FILE` first** (ids come from there — never guess an id, never hand-edit `{>>…<<}` markers or the YAML endmatter; the CLI writes those); answer each comment in-thread with `myd reply`. If a comment raises something only the user can answer, do **not** end your turn to ask in chat — put the question in the thread with `myd reply` and hand back with `myd view --wait`; the user answers in the viewer, and their reply arrives via the next `myd comments`; for suggestions (`originalText → replacementText`) either apply the change to the source (`myd set-block`) or reply why not; `myd resolve` what you've handled; **then `myd view FILE --wait` again** so the user sees the result and can continue — always end your turn by handing back with `--wait`, including when you're waiting on their answer to a question (they're in the viewer, not the terminal). Items shown as `[note]` are the user's overall Done Reviewing notes, not anchored comments — read them, but don't reply to or resolve them. When a note approves the doc and nothing is pending, you're done: report and stop (no further `--wait`). If a comment challenges a claim you can't verify, either ask in-thread or make the conservative edit (soften/remove) and say so in-thread — never invent figures.
+Use an **asynchronous handoff by default**. After `myd view FILE` opens the connected review tab, tell the user to return in chat when finished and end the turn. Do not poll the CLI, emit periodic “still waiting” updates, or spend agent turns watching an idle review. The viewer/server continue independently.
+
+When the user returns, run **`myd comments FILE` first**; never guess ids or hand-edit `{>>…<<}` markers/YAML endmatter. Answer with `myd reply`, apply suggestions with block operations, and `myd resolve` handled items. If only the user can answer, reply with the question in-thread, reopen with nonblocking `myd view FILE`, and end the turn. Items shown as `[note]` are overall Done notes; read but do not reply to or resolve them. If a claim cannot be verified, ask in-thread or soften/remove it—never invent evidence.
+
+Use `myd view FILE --wait --timeout N` only when the user explicitly asks for synchronous waiting **and** the execution runtime can block without polling. Never exceed 1800 seconds. If the command yields and continued waiting would require repeated polls or idle commentary, terminate only the waiter and switch to the asynchronous handoff; the detached server and browser tab remain usable.
 
 The viewer renders GFM, KaTeX, Shiki code, `> [!NOTE]` callouts, and ```` ```mermaid ````, ```` ```vega-lite ````, ```` ```html ```` (sandboxed) fences — prefer these over ASCII diagrams/tables. Users can annotate selected text, whole blocks, and diagram nodes/chart marks; object comments show as `@block›target` in `myd comments`. Edit by block (`myd blocks | block | set-block | insert`) rather than rewriting a file the user has annotated, and name blocks you'll revisit: `## Title {#name}` / ```` ```mermaid {#name} ````.
 

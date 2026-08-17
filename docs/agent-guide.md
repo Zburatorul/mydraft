@@ -12,13 +12,14 @@ Topics: `workflow` · `blocks` · `objects` · `rich` · `criticmarkup` · `expo
 ## workflow — the review loop
 
 ```bash
-myd view /abs/doc.md --wait          # open viewer; blocks until the user clicks Done Reviewing; prints their note
-myd comments /abs/doc.md             # pending items in document order (--json; --all includes resolved)
+myd view /abs/doc.md                 # open viewer and return; end the agent turn
+myd comments /abs/doc.md             # next turn: pending items in document order (--json; --all includes resolved)
 myd reply /abs/doc.md c3 "…"         # thread reply (author AI); myd resolve /abs/doc.md c3 [--summary "…"]
-myd view /abs/doc.md --wait          # hand it back
+myd view /abs/doc.md                 # hand revisions back, nonblocking
 ```
 
-- Always leave `--wait` running; its exit is the signal. Missed a Done? `curl localhost:7474/api/done-events?path=/abs/doc.md`.
+- Default to asynchronous handoff: open the review, tell the user to return in chat when finished, and end the turn. Do not poll or narrate idle status. On the next user turn, run `myd comments` first.
+- Use `--wait --timeout N` only when the user explicitly requests synchronous waiting and the runtime can block without polling (maximum 1800 seconds). If the wait yields and would require polling, terminate only the waiter; the detached server and tab remain usable.
 - Edits you make while the viewer is open show up live (file watcher). Prefer block ops (below) to whole-file rewrites: they keep the user's annotations and diff cleanly.
 - After a substantial rewrite of a doc the user already reviewed: `myd diff OLD.md NEW.md` → CriticMarkup diff file they can open with `myd view`.
 - Verify what you rendered: `myd shot /abs/doc.md out.png` (headless Chrome), then look at the PNG.
