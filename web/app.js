@@ -3,6 +3,7 @@ import { isEditorSubmitShortcut } from "./shortcuts.js";
 import { reviewPresentation } from "./review-state.js";
 import { revisionLabel, revisionTitle } from "./revision-label.js";
 import { islandDocument, islandThemeMessage, parseIslandMessage } from "./island-bridge.js";
+import { resolveTheme, themeTogglePresentation, toggledTheme } from "./theme.js";
 const qs = new URLSearchParams(location.search);
 const docPath = qs.get("path");
 const reviewId = qs.get("review");
@@ -77,9 +78,24 @@ function fixRelativeImages() {
 }
 
 // ---------- theme ----------
-const isDark = () => document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
-(function initTheme() { const t = localStorage.getItem("myd-theme"); if (t) document.documentElement.dataset.theme = t; })();
-$("#themeBtn").onclick = () => { const next = isDark() ? "light" : "dark"; document.documentElement.dataset.theme = next; localStorage.setItem("myd-theme", next); docEl.querySelectorAll("[data-hydrated]:not(.explainer)").forEach((el) => { delete el.dataset.hydrated; el.querySelectorAll(".rich-view, .src-toggle, .obj-comment").forEach((x) => x.remove()); }); hydrateRich(loadSeq).then(paintHighlights); };
+const themeBtn = $("#themeBtn");
+const currentTheme = () => resolveTheme(document.documentElement.dataset.theme, matchMedia("(prefers-color-scheme: dark)").matches);
+const isDark = () => currentTheme() === "dark";
+function applyTheme(theme, persist = false) {
+  document.documentElement.dataset.theme = theme;
+  const presentation = themeTogglePresentation(theme);
+  themeBtn.querySelector("[data-theme-icon]").dataset.themeIcon = presentation.icon;
+  themeBtn.querySelector("[data-theme-label]").textContent = presentation.label;
+  themeBtn.setAttribute("aria-label", presentation.title);
+  themeBtn.title = presentation.title;
+  if (persist) localStorage.setItem("myd-theme", theme);
+}
+applyTheme(resolveTheme(localStorage.getItem("myd-theme"), matchMedia("(prefers-color-scheme: dark)").matches));
+themeBtn.onclick = () => {
+  applyTheme(toggledTheme(currentTheme()), true);
+  docEl.querySelectorAll("[data-hydrated]:not(.explainer)").forEach((el) => { delete el.dataset.hydrated; el.querySelectorAll(".rich-view, .src-toggle, .obj-comment").forEach((x) => x.remove()); });
+  hydrateRich(loadSeq).then(paintHighlights);
+};
 
 // ---------- rich blocks ----------
 let mermaidMod, vegaLoaded;

@@ -14,7 +14,10 @@
   <span id="reviewState" role="status" aria-live="polite" hidden></span>
   <span class="spacer"></span>
   <label class="toggle"><input type="checkbox" id="showResolved"> resolved</label>
-  <button id="themeBtn" title="Toggle light/dark">◐</button>
+  <button id="themeBtn" class="theme-toggle" type="button" aria-label="Switch to dark mode" title="Switch to dark mode">
+    <span class="theme-toggle-icon" data-theme-icon="moon" aria-hidden="true"></span>
+    <span data-theme-label>Dark mode</span>
+  </button>
   <button id="doneBtn" class="primary">Done Reviewing</button>
 </header>
 <main>
