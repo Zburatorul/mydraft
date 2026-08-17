@@ -18,7 +18,7 @@ Rich documents can also use an `explainer` fence for native, responsive timing/m
 myd publish notes/wip.md --profile research
 ```
 
-By default it writes `.myd-publish/wip/` beside the source document. `--output-dir DIR` overrides that location. Each successful run creates an immutable bundle under `releases/<timestamp>-<source-hash>/` containing `source.md`, `index.html`, and `manifest.json`. The root `index.json` points to the current release and lists prior bundles newest-first.
+By default it writes `.myd-publish/wip/` beside the source document. These local generated archives are ignored by Git; `--output-dir DIR` overrides the location. Each successful run creates an immutable bundle under `releases/<timestamp>-<source-hash>/` containing `source.md`, `index.html`, and `manifest.json`. The root `index.json` points to the current release and lists prior bundles newest-first.
 
 Publish v0 checks for server-rendered rich-block errors before committing. A failed check leaves the previous index and releases untouched. Concurrent publishes fail fast through `.publish.lock`; myd never deletes a pre-existing lock automatically, so a stale lock must be inspected and removed explicitly. Model references, links, screenshots, contrast, and responsive-layout checks remain promotion gates for later slices; the manifest does not claim they ran.
 

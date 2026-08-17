@@ -1,3 +1,4 @@
 node_modules/
 *.png
 .mydraft/
+.myd-publish/
