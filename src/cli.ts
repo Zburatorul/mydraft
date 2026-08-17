@@ -5,6 +5,7 @@ import fs from "node:fs";
 import { spawn, execFileSync } from "node:child_process";
 import { STATE_FILE } from "./server.ts";
 import { loadDoc, reply as replyDoc, resolve as resolveDoc } from "./doc.ts";
+import { DocumentVersionConflict, mutateDocument } from "./document-mutation.ts";
 import { topBlocks } from "./render.ts";
 import { getSemanticObject, listSemanticObjects, replaceSemanticObject } from "./semantic-objects.ts";
 
@@ -21,7 +22,11 @@ const cmd = pos.shift();
 const JSON_OUT = !!flags.json;
 const DEFAULT_WAIT_TIMEOUT_SEC = 30 * 60;
 const out = (o: unknown, human?: string) => console.log(JSON_OUT ? JSON.stringify(o, null, 2) : (human ?? JSON.stringify(o, null, 2)));
-const die = (m: string, code = 1) => { console.error(m); process.exit(code); };
+const die = (m: string, code = 1): never => { console.error(m); process.exit(code); };
+const mutationError = (error: unknown): never => {
+  if (error instanceof DocumentVersionConflict) die(`version mismatch: file is ${error.currentVersion}`, 3);
+  return die(error instanceof Error ? error.message : String(error));
+};
 const abs = (p?: string) => { if (!p) die("missing <file.md>"); const a = path.resolve(p!); if (!fs.existsSync(a)) die(`no such file: ${a}`); return a; };
 const waitTimeout = () => {
   if (flags.timeout === undefined) return DEFAULT_WAIT_TIMEOUT_SEC;
@@ -80,8 +85,8 @@ const HELP = `myd — Markdown viewer + annotations + agent CLI
   myd resolve <file.md> <id> [--summary S]  mark an item resolved
   myd blocks <file.md>                      list blocks with ids, types, offsets
   myd block <file.md> <id>                  print one block's source
-  myd set-block <file.md> <id> [--file F]   replace a block's source with stdin (or --file)
-  myd insert <file.md> <id> [--file F]      insert stdin after block <id> (--before to insert before)
+  myd set-block <file.md> <id> --version V [--file F]   replace a block's source with stdin (or --file)
+  myd insert <file.md> <id> --version V [--file F]      insert stdin after block <id> (--before to insert before)
   myd objects <file.md>                     list patchable semantic objects as block›target
   myd object <file.md> <block›target>        print one semantic object's editable YAML
   myd set-object <file.md> <block›target> --version V [--file F]   guarded validated replacement
@@ -161,11 +166,25 @@ switch (cmd) {
     const items = flags.all ? doc.items : doc.items.filter((i) => i.status !== "resolved");
     // document-level notes (Done Reviewing notes): a comment with no anchor text, no object anchor, no parent
     const slim = items.map(({ id, kind, suggestionKind, parentId, author, text, anchorText, originalText, replacementText, status, line, anchor }) => ({ id, kind: kind === "comment" && !anchorText && !anchor && !parentId ? "note" as const : kind, suggestionKind, parentId, author, status, line, anchorText, originalText, replacementText, anchor, text }));
-    out({ path: file, version: doc.version, items: slim }, slim.map((i) => `${i.id} [${i.kind === "note" ? "note — document-level, from Done Reviewing" : i.kind}${i.parentId ? `→${i.parentId}` : ""}] ${i.author ?? "?"} L${i.line}${i.anchorText ? ` “${i.anchorText.slice(0, 60)}”` : ""}${i.anchor ? ` @${i.anchor.block}${i.anchor.target ? "›" + i.anchor.target : ""}` : ""}\n    ${i.kind === "suggestion" ? `${i.originalText} → ${i.replacementText}  ` : ""}${i.text}`).join("\n") + (slim.length ? `\n\nNext: myd reply ${JSON.stringify(file)} <id> "…" (questions for the user go here too) · myd set-block/insert to edit · myd resolve <id> · then hand back: myd view ${JSON.stringify(file)} --wait` : "") || "no pending items");
+    out({ path: file, version: doc.version, items: slim }, slim.map((i) => `${i.id} [${i.kind === "note" ? "note — document-level, from Done Reviewing" : i.kind}${i.parentId ? `→${i.parentId}` : ""}] ${i.author ?? "?"} L${i.line}${i.anchorText ? ` “${i.anchorText.slice(0, 60)}”` : ""}${i.anchor ? ` @${i.anchor.block}${i.anchor.target ? "›" + i.anchor.target : ""}` : ""}\n    ${i.kind === "suggestion" ? `${i.originalText} → ${i.replacementText}  ` : ""}${i.text}`).join("\n") + (slim.length ? `\n\nNext: myd reply ${JSON.stringify(file)} <id> "…" (questions for the user go here too) · myd blocks ${JSON.stringify(file)} --json to get the version before myd set-block/insert · myd resolve <id> · then hand back: myd view ${JSON.stringify(file)} --wait` : "") || "no pending items");
     break;
   }
-  case "reply": { const file = abs(pos[0]); const doc = loadDoc(file, fs.readFileSync(file, "utf8")); fs.writeFileSync(file, replyDoc(doc, pos[1]!, pos.slice(2).join(" "), String(flags.by ?? "AI"))); out({ ok: true }, "replied"); break; }
-  case "resolve": { const file = abs(pos[0]); const doc = loadDoc(file, fs.readFileSync(file, "utf8")); fs.writeFileSync(file, resolveDoc(doc, pos[1]!, String(flags.by ?? "AI"), undefined, flags.summary ? String(flags.summary) : undefined)); out({ ok: true }, "resolved"); break; }
+  case "reply": {
+    const file = abs(pos[0]);
+    try {
+      const result = mutateDocument(file, (doc) => replyDoc(doc, pos[1]!, pos.slice(2).join(" "), String(flags.by ?? "AI")));
+      out({ ok: true, id: pos[1], previousVersion: result.previousVersion, version: result.version }, "replied");
+    } catch (error) { mutationError(error); }
+    break;
+  }
+  case "resolve": {
+    const file = abs(pos[0]);
+    try {
+      const result = mutateDocument(file, (doc) => resolveDoc(doc, pos[1]!, String(flags.by ?? "AI"), undefined, flags.summary ? String(flags.summary) : undefined));
+      out({ ok: true, id: pos[1], previousVersion: result.previousVersion, version: result.version }, "resolved");
+    } catch (error) { mutationError(error); }
+    break;
+  }
   case "blocks": { const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); out({ path: file, version: doc.version, blocks }, blocks.map((b) => `${b.id.padEnd(16)} ${b.type.padEnd(12)} ${b.head}`).join("\n")); break; }
   case "block": { const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); const b = blocks.find((x) => x.id === pos[1] || `b${x.index}` === pos[1]); if (!b) die(`no block ${pos[1]}`); process.stdout.write(doc.body.slice(b!.start, b!.end) + "\n"); break; }
   case "objects": {
@@ -179,27 +198,33 @@ switch (cmd) {
     out(object, object!.source); break;
   }
   case "set-object": {
-    const file = abs(pos[0]); const doc = loadDoc(file, fs.readFileSync(file, "utf8"));
+    const file = abs(pos[0]);
     if (!flags.version) die("set-object requires --version from myd objects --json");
-    if (flags.version !== doc.version) die(`version mismatch: file is ${doc.version}`, 3);
     const replacement = flags.file ? fs.readFileSync(String(flags.file), "utf8") : await Bun.stdin.text();
-    let next: string;
-    try { next = replaceSemanticObject(doc, pos[1] ?? "", replacement); }
-    catch (error) { die(error instanceof Error ? error.message : String(error)); break; }
-    fs.writeFileSync(file, next!);
-    const version = loadDoc(file, next!).version;
-    out({ ok: true, ref: pos[1], version }, `set-object ${pos[1]} ok`); break;
+    try {
+      const result = mutateDocument(file, (doc) => replaceSemanticObject(doc, pos[1] ?? "", replacement), { expectedVersion: String(flags.version) });
+      out({ ok: true, ref: pos[1], previousVersion: result.previousVersion, version: result.version }, `set-object ${pos[1]} ok`);
+    } catch (error) { mutationError(error); }
+    break;
   }
   case "set-block": case "insert": {
-    const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); const b = blocks.find((x) => x.id === pos[1] || `b${x.index}` === pos[1]); if (!b) die(`no block ${pos[1]}`);
-    if (flags.version && flags.version !== doc.version) die(`version mismatch: file is ${doc.version}`, 3);
+    const file = abs(pos[0]);
+    if (!flags.version) die(`${cmd} requires --version from myd blocks --json`);
     const content = (flags.file ? fs.readFileSync(String(flags.file), "utf8") : await Bun.stdin.text()).replace(/\s+$/, "");
-    let body: string;
-    if (cmd === "set-block") body = doc.body.slice(0, b!.start) + content + doc.body.slice(b!.end);
-    else if (flags.before) body = doc.body.slice(0, b!.start) + content + "\n\n" + doc.body.slice(b!.start);
-    else body = doc.body.slice(0, b!.end) + "\n\n" + content + doc.body.slice(b!.end);
-    const next = body + doc.endmatter.raw; fs.writeFileSync(file, next);
-    out({ ok: true, version: loadDoc(file, next).version }, `${cmd} ${b!.id} ok`); break;
+    try {
+      const result = mutateDocument(file, (doc) => {
+        const blocks = topBlocks(doc);
+        const b = blocks.find((x) => x.id === pos[1] || `b${x.index}` === pos[1]);
+        if (!b) throw new Error(`no block ${pos[1]}`);
+        let body: string;
+        if (cmd === "set-block") body = doc.body.slice(0, b.start) + content + doc.body.slice(b.end);
+        else if (flags.before) body = doc.body.slice(0, b.start) + content + "\n\n" + doc.body.slice(b.start);
+        else body = doc.body.slice(0, b.end) + "\n\n" + content + doc.body.slice(b.end);
+        return body + doc.endmatter.raw;
+      }, { expectedVersion: String(flags.version) });
+      out({ ok: true, block: pos[1], previousVersion: result.previousVersion, version: result.version }, `${cmd} ${pos[1]} ok`);
+    } catch (error) { mutationError(error); }
+    break;
   }
   case "shot": {
     const file = abs(pos[0]); const { port } = await ensureServer(); const url = docUrl(port, file);

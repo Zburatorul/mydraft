@@ -1,6 +1,6 @@
 # mydraft
 
-Small tools that make Roughdraft (`npm i -g roughdraft`) usable for human–agent review, plus the plan for where this goes (`plans/roughdraft-plus.md`).
+Small tools that make Roughdraft (`npm i -g roughdraft`) usable for human–agent review. The current product and execution roadmap is [`plans/roadmap.md`](plans/roadmap.md).
 
 | Tool | What |
 |---|---|

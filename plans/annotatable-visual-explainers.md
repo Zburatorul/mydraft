@@ -1,5 +1,8 @@
 # The next myd bet: annotatable visual explainers {#title}
 
+> [!NOTE]
+> **Historical planning record.** This document preserves the original proposal and its review threads. The concise, current source of truth is [the mydraft roadmap](roadmap.md).
+
 ```mermaid {#north-star}
 flowchart TB
   N["KEEP MARKDOWN AS THE SOURCE"] --> C["Compose<br/>compact source + trusted visual primitives"]
@@ -323,18 +326,63 @@ comments:
     anchor:
       block: north-star
       target: mm17868646732070-flowchart-N-0
+    status: resolved
+    resolvedBy: AI
+    resolvedAt: 2026-08-17T21:04:11.099Z
+    resolution: Clarified Markdown as source container, with native explainers and HTML as complementary rendering layers.
   c12:
     by: user
     at: 2026-08-16T16:03:33.203Z
     anchor:
       block: north-star
       target: mm17868961852430-flowchart-P-5
+    status: resolved
+    resolvedBy: AI
+    resolvedAt: 2026-08-17T21:04:11.501Z
+    resolution: Recorded the implemented semantic-diff foundation and deferred broader presentation until validated.
   c13:
     by: user
     at: 2026-08-16T16:04:18.607Z
+    status: resolved
+    resolvedBy: AI
+    resolvedAt: 2026-08-17T21:04:11.896Z
+    resolution: Explained draft branches and removed them from the active roadmap.
   c14:
     by: user
     at: 2026-08-16T16:04:33.655Z
+    status: resolved
+    resolvedBy: AI
+    resolvedAt: 2026-08-17T21:04:12.299Z
+    resolution: Captured as the accepted north star.
   c15:
     by: user
     at: 2026-08-16T16:04:56.472Z
+    status: resolved
+    resolvedBy: AI
+    resolvedAt: 2026-08-17T21:04:12.698Z
+    resolution: Explained CriticMarkup in plain language; the canonical roadmap avoids relying on the term.
+  c16:
+    body: Markdown is sufficient as the source container, not as the visual styling language. Native explainer fences provide trusted rich rendering for reusable semantic objects, while sandboxed HTML remains the escape hatch for genuinely custom visuals. The roadmap will state that boundary explicitly.
+    by: AI
+    at: 2026-08-17T21:04:10.897Z
+    re: c11
+  c17:
+    body: The useful diff is semantic source diff, not generated-HTML diff. We now have a small implementation that names changed scalar fields by stable explainer object ID; integrating it into a readable review/publish experience remains later work and should grow only from real review needs.
+    by: AI
+    at: 2026-08-17T21:04:11.300Z
+    re: c12
+  c18:
+    body: A draft branch meant a separately saved alternative version of a document that could later be selected or merged. We have not validated a need for that workflow, so it is not part of the active roadmap.
+    by: AI
+    at: 2026-08-17T21:04:11.700Z
+    re: c13
+  c19:
+    body: This became the accepted product test in ADR 0003 and remains the roadmap's north star.
+    by: AI
+    at: 2026-08-17T21:04:12.101Z
+    re: c14
+  c20:
+    body: CriticMarkup is the compact annotation syntax stored alongside Markdown—for example, highlighted text plus a comment marker. myd renders it as comments and suggestions, so readers normally interact with the review UI rather than the raw syntax.
+    by: AI
+    at: 2026-08-17T21:04:12.500Z
+    re: c15

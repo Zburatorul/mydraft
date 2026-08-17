@@ -46,12 +46,13 @@ Blocks are the top-level Markdown nodes: `b0…bn` positionally, or a **stable n
 ```bash
 myd blocks doc.md                     # id  type  first-line          (types: h1..h6, para, code:LANG, list, table, blockquote, math, html)
 myd block doc.md flow                 # print that block's source
-myd set-block doc.md flow <<'EOF'     # replace it (stdin or --file F); use --version <v> from `myd blocks --json` to guard against concurrent edits
+myd blocks doc.md --json             # capture the current document version
+myd set-block doc.md flow --version <v> <<'EOF' # version is required for content-derived edits
 ```mermaid {#flow}
 graph LR; A-->B
 ```
 EOF
-myd insert doc.md results --before <<'EOF' … EOF   # insert before/after a block
+myd insert doc.md results --before --version <v> <<'EOF' … EOF   # insert before/after a block; obtain <v> from `myd blocks --json`
 ```
 
 Positional ids shift when blocks are added; name anything you expect to revisit or that the user might comment on.

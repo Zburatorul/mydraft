@@ -7,6 +7,7 @@ import { renderDoc, topBlocks } from "./render.ts";
 import { ReviewTracker } from "./review-tracker.ts";
 import { RevisionTracker, type RevisionSnapshot } from "./revision-tracker.ts";
 import { applySelectionAnnotation } from "./selection-annotation.ts";
+import { mutateDocument } from "./document-mutation.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const WEB = path.join(ROOT, "web");
@@ -41,9 +42,9 @@ function readDoc(p: string): Doc {
   revisionTracker.observe(abs, doc.version, fs.statSync(abs).mtime.toISOString());
   return doc;
 }
-function writeDoc(doc: Doc, next: string): Doc {
-  fs.writeFileSync(doc.path, next);
-  const written = loadDoc(doc.path, next);
+function writeDoc(doc: Doc, transform: (current: Doc) => string, expectedVersion?: string): Doc {
+  const result = mutateDocument(doc.path, transform, expectedVersion === undefined ? {} : { expectedVersion });
+  const written = result.document;
   revisionTracker.observe(doc.path, written.version);
   reviewTracker.advance(doc.path, written.version);
   return written;
@@ -54,7 +55,13 @@ function broadcast(p: string, msg: unknown) {
 function ensureWatch(abs: string) {
   if (watchers.has(abs)) return;
   let t: Timer | null = null;
-  const w = fs.watch(abs, () => {
+  const dir = path.dirname(abs);
+  const basename = path.basename(abs);
+  const w = fs.watch(dir, (_event, filename) => {
+    // Bun/Linux can report only creation of the atomic-write temporary file,
+    // rather than the subsequent rename over `basename`.
+    const name = filename ? String(filename) : null;
+    if (name && name !== basename && !name.startsWith(`.${basename}.`)) return;
     if (t) clearTimeout(t);
     t = setTimeout(() => {
       try {
@@ -68,8 +75,10 @@ function ensureWatch(abs: string) {
   });
   watchers.set(abs, w);
 }
-function requireVersion(doc: Doc, v: unknown) {
-  if (v && v !== doc.version) throw Object.assign(new Error(`Version mismatch: document is ${doc.version}, you have ${v}. Reload and retry.`), { status: 409 });
+function requireMutationVersion(v: unknown) {
+  if (typeof v !== "string" || !v.trim()) {
+    throw Object.assign(new Error("A document version is required for this mutation."), { status: 400 });
+  }
 }
 function requireTrackedReview(doc: Doc, reviewId: unknown, version: unknown) {
   const status = reviewTracker.status(doc.path, typeof reviewId === "string" ? reviewId : null, typeof version === "string" ? version : null);
@@ -130,36 +139,47 @@ export function startServer(port = 7474) {
         }
         if (req.method === "POST" && p === "/api/annotate") {
           const b = await req.json();
-          const doc = readDoc(b.path); requireVersion(doc, b.version);
-          requireTrackedReview(doc, b.reviewId, b.version);
-          const result = applySelectionAnnotation(doc, b);
-          if (!result) return json({ error: "Could not locate the selected text in the source. Try a shorter selection." }, 422);
-          const written = writeDoc(doc, result.source);
-          return json({ ok: true, anchorMode: result.anchorMode, version: written.version, revision: revisionTracker.current(doc.path) }, 200);
+          requireMutationVersion(b.version);
+          const doc = readDoc(b.path);
+          let anchorMode: string | undefined;
+          const written = writeDoc(doc, (current) => {
+            requireTrackedReview(current, b.reviewId, b.version);
+            const result = applySelectionAnnotation(current, b);
+            if (!result) throw Object.assign(new Error("Could not locate the selected text in the source. Try a shorter selection."), { status: 422 });
+            anchorMode = result.anchorMode;
+            return result.source;
+          }, b.version);
+          return json({ ok: true, anchorMode, version: written.version, revision: revisionTracker.current(doc.path) }, 200);
         }
         if (req.method === "POST" && p === "/api/annotate-object") {
           const b = await req.json();
-          const doc = readDoc(b.path); requireVersion(doc, b.version);
-          requireTrackedReview(doc, b.reviewId, b.version);
-          const blk = topBlocks(doc).find((x) => x.id === b.bid || `b${x.index}` === b.bid);
-          if (!blk) return json({ error: `no block ${b.bid}` }, 404);
-          const next = annotateObject(doc, blk.end, b.body, { block: b.bid, ...(b.target ? { target: b.target } : {}), ...(b.quote ? { quote: String(b.quote).slice(0, 500) } : {}) }, b.by);
-          writeDoc(doc, next);
-          return json({ ok: true }, 200);
+          requireMutationVersion(b.version);
+          const doc = readDoc(b.path);
+          const written = writeDoc(doc, (current) => {
+            requireTrackedReview(current, b.reviewId, b.version);
+            const blk = topBlocks(current).find((x) => x.id === b.bid || `b${x.index}` === b.bid);
+            if (!blk) throw Object.assign(new Error(`no block ${b.bid}`), { status: 404 });
+            return annotateObject(current, blk.end, b.body, { block: b.bid, ...(b.target ? { target: b.target } : {}), ...(b.quote ? { quote: String(b.quote).slice(0, 500) } : {}) }, b.by);
+          }, b.version);
+          return json({ ok: true, version: written.version, revision: revisionTracker.current(doc.path) }, 200);
         }
         if (req.method === "POST" && p === "/api/reply") {
           const b = await req.json();
           const doc = readDoc(b.path);
-          requireTrackedReview(doc, b.reviewId, b.version);
-          writeDoc(doc, reply(doc, b.id, b.message, b.by ?? "user"));
-          return json({ ok: true }, 200);
+          const written = writeDoc(doc, (current) => {
+            requireTrackedReview(current, b.reviewId, b.version);
+            return reply(current, b.id, b.message, b.by ?? "user");
+          });
+          return json({ ok: true, version: written.version, revision: revisionTracker.current(doc.path) }, 200);
         }
         if (req.method === "POST" && p === "/api/resolve") {
           const b = await req.json();
           const doc = readDoc(b.path);
-          requireTrackedReview(doc, b.reviewId, b.version);
-          writeDoc(doc, resolve(doc, b.id, b.by ?? "user", undefined, b.summary));
-          return json({ ok: true }, 200);
+          const written = writeDoc(doc, (current) => {
+            requireTrackedReview(current, b.reviewId, b.version);
+            return resolve(current, b.id, b.by ?? "user", undefined, b.summary);
+          });
+          return json({ ok: true, version: written.version, revision: revisionTracker.current(doc.path) }, 200);
         }
         if (req.method === "POST" && p === "/api/done") {
           const b = await req.json();
@@ -167,7 +187,7 @@ export function startServer(port = 7474) {
           requireTrackedReview(doc, b.reviewId, b.version);
           if (b.note && String(b.note).trim()) {
             const { appendRoughdraftDocumentComment } = await import("../vendor/rfm/index.js") as any;
-            doc = writeDoc(doc, appendRoughdraftDocumentComment(doc.source, { message: String(b.note).trim(), author: b.by ?? "user" }));
+            doc = writeDoc(doc, (current) => appendRoughdraftDocumentComment(current.source, { message: String(b.note).trim(), author: b.by ?? "user" }));
           }
           const tracking = reviewTracker.complete(doc.path, b.reviewId, doc.version);
           const ev = { path: doc.path, at: new Date().toISOString(), note: b.note };
@@ -178,7 +198,7 @@ export function startServer(port = 7474) {
         }
         return new Response("not found", { status: 404 });
       } catch (err: any) {
-        return json({ error: err?.message ?? String(err) }, err?.status ?? 500);
+        return json({ error: err?.message ?? String(err), ...(err?.currentVersion ? { currentVersion: err.currentVersion } : {}) }, err?.status ?? 500);
       }
     },
     websocket: {
