@@ -2,10 +2,11 @@
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
-import { loadDoc, locateAnchor, annotate, annotateObject, reply, resolve, type Doc } from "./doc.ts";
+import { loadDoc, annotateObject, reply, resolve, type Doc } from "./doc.ts";
 import { renderDoc, topBlocks } from "./render.ts";
 import { ReviewTracker } from "./review-tracker.ts";
 import { RevisionTracker, type RevisionSnapshot } from "./revision-tracker.ts";
+import { applySelectionAnnotation } from "./selection-annotation.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const WEB = path.join(ROOT, "web");
@@ -131,13 +132,10 @@ export function startServer(port = 7474) {
           const b = await req.json();
           const doc = readDoc(b.path); requireVersion(doc, b.version);
           requireTrackedReview(doc, b.reviewId, b.version);
-          const [s, e] = String(b.blockPos).split("-").map(Number);
-          const loc = locateAnchor(doc, s!, e!, b.anchorText, b.prefix ?? "");
-          if (!loc) return json({ error: "Could not locate the selected text in the source. Try a shorter selection." }, 422);
-          const ann = b.kind === "suggestion" ? { kind: "suggestion" as const, replacement: b.replacement, note: b.note, by: b.by } : { kind: "comment" as const, body: b.body, by: b.by };
-          const next = annotate(doc, loc.start, loc.end, ann);
-          const written = writeDoc(doc, next);
-          return json({ ok: true, version: written.version, revision: revisionTracker.current(doc.path) }, 200);
+          const result = applySelectionAnnotation(doc, b);
+          if (!result) return json({ error: "Could not locate the selected text in the source. Try a shorter selection." }, 422);
+          const written = writeDoc(doc, result.source);
+          return json({ ok: true, anchorMode: result.anchorMode, version: written.version, revision: revisionTracker.current(doc.path) }, 200);
         }
         if (req.method === "POST" && p === "/api/annotate-object") {
           const b = await req.json();

@@ -5,6 +5,7 @@ import { revisionLabel, revisionTitle } from "./revision-label.js";
 import { islandDocument, islandThemeMessage, parseIslandMessage } from "./island-bridge.js";
 import { resolveTheme, themeTogglePresentation, toggledTheme } from "./theme.js";
 import { clickAwayDismissal } from "./annotation-overlay.js";
+import { annotationSaveDisposition } from "./annotation-save.js";
 const qs = new URLSearchParams(location.search);
 const docPath = qs.get("path");
 const reviewId = qs.get("review");
@@ -257,8 +258,11 @@ function placeEditor(rect) {
   editor.style.top = `${rect.bottom + window.scrollY + 8}px`;
   editor.hidden = false;
 }
+function clearEditorError() { $("#edError").hidden = true; $("#edError").textContent = ""; }
+function showEditorError(message) { $("#edError").textContent = message; $("#edError").hidden = false; }
 function openDialog(kind, rect) {
   edMode = kind; edTarget = { kind: "text" };
+  clearEditorError();
   $("#edAnchor").textContent = pending.anchorText; $("#edAnchor").hidden = false;
   const isSug = kind === "suggest";
   $("#edRepl").hidden = !isSug; $("#edRepl").value = isSug ? pending.anchorText : "";
@@ -266,7 +270,7 @@ function openDialog(kind, rect) {
   placeEditor(rect ?? getSelection().getRangeAt(0).getBoundingClientRect());
   (isSug ? $("#edRepl") : $("#edBody")).focus();
 }
-function closeEditor() { editor.hidden = true; edTarget = null; clearAnnotationSelection(); }
+function closeEditor() { editor.hidden = true; edTarget = null; clearEditorError(); clearAnnotationSelection(); }
 $("#edCancel").onclick = closeEditor;
 editor.addEventListener("keydown", (e) => {
   const submit = isEditorSubmitShortcut(e);
@@ -280,16 +284,21 @@ async function saveEditor() {
   if (edTarget?.kind === "object") {
     if (!body.trim()) return;
     const r = await fetch("/api/annotate-object", { method: "POST", body: JSON.stringify({ path: docPath, reviewId, version: state.version, bid: edTarget.blockEl.dataset.bid, target: edTarget.target, quote: edTarget.quote, body, by: "user" }) });
-    if (!r.ok) alert("Failed to save comment");
-    closeEditor(); return;
+    const disposition = await annotationSaveDisposition(r, "Failed to save comment");
+    if (disposition.reload) await load();
+    if (disposition.error) showEditorError(disposition.error);
+    if (disposition.close) closeEditor();
+    return;
   }
   if (!pending) return;
   const isSug = edMode === "suggest";
   if (!isSug && !body.trim()) return;
   const payload = { path: docPath, reviewId, version: state.version, ...pending, kind: isSug ? "suggestion" : "comment", body, replacement: repl, note: body, by: "user" };
   const r = await fetch("/api/annotate", { method: "POST", body: JSON.stringify(payload) });
-  if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || "Failed to save annotation"); if (r.status === 409) load(); }
-  closeEditor();
+  const disposition = await annotationSaveDisposition(r);
+  if (disposition.reload) await load();
+  if (disposition.error) showEditorError(disposition.error);
+  if (disposition.close) closeEditor();
 }
 function dismissAnnotationOverlays(target) {
   const dismissal = clickAwayDismissal(target, editor, popover);
@@ -301,6 +310,7 @@ document.addEventListener("mousedown", (e) => dismissAnnotationOverlays(e.target
 function objectComment(blockEl, target, evt, quote = null) {
   if (!reviewStatus?.tracked) return;
   edMode = "comment"; edTarget = { kind: "object", blockEl, target, quote }; pending = null;
+  clearEditorError();
   $("#edAnchor").textContent = target ? `${blockEl.dataset.bid} › ${target}${quote ? `\n“${quote.slice(0, 160)}”` : ""}` : `${blockEl.dataset.bid} (whole block)`; $("#edAnchor").hidden = false;
   $("#edRepl").hidden = true; $("#edBody").value = ""; $("#edBody").placeholder = "Comment…";
   const rect = (evt?.target?.getBoundingClientRect?.()) ?? blockEl.getBoundingClientRect();
