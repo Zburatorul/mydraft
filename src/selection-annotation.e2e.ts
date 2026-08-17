@@ -73,9 +73,13 @@ async function selectAcrossLink(page: Page) {
 beforeAll(async () => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "myd-selection-e2e-"));
   await startIsolatedServer();
-  const executablePath = Bun.which("google-chrome") ?? Bun.which("chromium") ?? Bun.which("chromium-browser");
-  if (!executablePath) throw new Error("The browser regression test requires Chrome or Chromium on PATH");
-  browser = await chromium.launch({ executablePath, headless: true, args: ["--no-sandbox"] });
+  const managedBrowserInstalled = fs.existsSync(chromium.executablePath());
+  const systemExecutable = Bun.which("google-chrome") ?? Bun.which("chromium") ?? Bun.which("chromium-browser");
+  browser = await chromium.launch({
+    ...(!managedBrowserInstalled && systemExecutable ? { executablePath: systemExecutable } : {}),
+    headless: true,
+    args: ["--no-sandbox"],
+  });
 });
 
 afterAll(async () => {
