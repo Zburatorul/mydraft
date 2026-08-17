@@ -4,6 +4,7 @@ import { reviewPresentation } from "./review-state.js";
 import { revisionLabel, revisionTitle } from "./revision-label.js";
 import { islandDocument, islandThemeMessage, parseIslandMessage } from "./island-bridge.js";
 import { resolveTheme, themeTogglePresentation, toggledTheme } from "./theme.js";
+import { clickAwayDismissal } from "./annotation-overlay.js";
 const qs = new URLSearchParams(location.search);
 const docPath = qs.get("path");
 const reviewId = qs.get("review");
@@ -164,6 +165,7 @@ window.addEventListener("message", (event) => {
   const message = parseIslandMessage(event.data);
   if (!message) return;
   if (message.type === "resize") { frame.style.height = `${message.height + 8}px`; return; }
+  if (message.type === "pointerdown") { dismissAnnotationOverlays(frame); return; }
   const block = frame.closest(".rich.island");
   if (!block) return;
   const frameRect = frame.getBoundingClientRect();
@@ -222,11 +224,14 @@ $("#showResolved").onchange = () => { paintHighlights(); renderRail(); };
 const popover = $("#popover");
 let pending = null;
 document.addEventListener("mouseup", () => setTimeout(captureSelection, 0));
-document.addEventListener("keyup", (e) => { if (e.key === "Escape") { popover.hidden = true; } });
+document.addEventListener("keyup", (e) => { if (e.key === "Escape") closePopover(); });
+function clearAnnotationSelection() { pending = null; getSelection()?.removeAllRanges(); }
+function closePopover() { popover.hidden = true; clearAnnotationSelection(); }
 function captureSelection() {
   if (!reviewStatus?.tracked) return;
+  if (!editor.hidden || !popover.hidden) return;
   const sel = getSelection();
-  if (!sel || sel.isCollapsed || !docEl.contains(sel.anchorNode)) { if (editor.hidden) popover.hidden = true; return; }
+  if (!sel || sel.isCollapsed || !docEl.contains(sel.anchorNode)) { if (editor.hidden) closePopover(); return; }
   const range = sel.getRangeAt(0);
   const text = sel.toString();
   if (!text.trim()) return;
@@ -261,7 +266,7 @@ function openDialog(kind, rect) {
   placeEditor(rect ?? getSelection().getRangeAt(0).getBoundingClientRect());
   (isSug ? $("#edRepl") : $("#edBody")).focus();
 }
-function closeEditor() { editor.hidden = true; pending = null; edTarget = null; getSelection()?.removeAllRanges(); }
+function closeEditor() { editor.hidden = true; edTarget = null; clearAnnotationSelection(); }
 $("#edCancel").onclick = closeEditor;
 editor.addEventListener("keydown", (e) => {
   const submit = isEditorSubmitShortcut(e);
@@ -286,7 +291,12 @@ async function saveEditor() {
   if (!r.ok) { const e = await r.json().catch(() => ({})); alert(e.error || "Failed to save annotation"); if (r.status === 409) load(); }
   closeEditor();
 }
-document.addEventListener("mousedown", (e) => { if (!editor.hidden && !editor.contains(e.target) && !popover.contains(e.target)) { /* keep open while user reselects? close for simplicity */ if (!$("#edBody").value && !$("#edRepl").value) closeEditor(); } });
+function dismissAnnotationOverlays(target) {
+  const dismissal = clickAwayDismissal(target, editor, popover);
+  if (dismissal === editor) closeEditor();
+  if (dismissal === popover) closePopover();
+}
+document.addEventListener("mousedown", (e) => dismissAnnotationOverlays(e.target));
 
 function objectComment(blockEl, target, evt, quote = null) {
   if (!reviewStatus?.tracked) return;

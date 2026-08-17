@@ -8,6 +8,11 @@ describe("sandboxed HTML island bridge", () => {
     expect(parseIslandMessage({ channel: "myd:island", type: "resize", height: 50_000 })).toBeNull();
   });
 
+  test("forwards click-away intent from anywhere inside a sandboxed island", () => {
+    expect(parseIslandMessage({ channel: "myd:island", type: "pointerdown" })).toEqual({ type: "pointerdown" });
+    expect(islandDocument("<main>island</main>")).toContain('addEventListener("pointerdown"');
+  });
+
   test("preserves semantic identity and optional selected text", () => {
     expect(parseIslandMessage({
       channel: "myd:island",

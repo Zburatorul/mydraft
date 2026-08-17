@@ -7,6 +7,7 @@ export function islandThemeMessage(theme) {
 
 export function parseIslandMessage(value) {
   if (!value || typeof value !== "object" || value.channel !== ISLAND_CHANNEL) return null;
+  if (value.type === "pointerdown") return { type: "pointerdown" };
   if (value.type === "resize") {
     const height = Number(value.height);
     return Number.isFinite(height) && height >= 80 && height <= 20_000 ? { type: "resize", height: Math.ceil(height) } : null;
@@ -31,6 +32,7 @@ export const ISLAND_BOOTSTRAP = `<script>(()=>{
     const message=event.data;
     if(event.source===parent&&message?.channel==="myd:island"&&message.type==="theme"&&(message.theme==="light"||message.theme==="dark"))document.documentElement.dataset.mydTheme=message.theme;
   });
+  addEventListener("pointerdown",()=>send({type:"pointerdown"}));
   addEventListener("click",event=>{
     const element=event.target.closest?.("[data-myd-id]");
     if(!element)return;
