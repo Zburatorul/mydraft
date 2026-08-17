@@ -7,6 +7,7 @@ import { loadDoc } from "./doc.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const SOURCE = "Review [the plan](https://example.com) carefully.\n";
+const E2E_TIMEOUT_MS = 30_000;
 
 let browser: Browser;
 let server: ReturnType<typeof Bun.spawn>;
@@ -80,14 +81,14 @@ beforeAll(async () => {
     headless: true,
     args: ["--no-sandbox"],
   });
-});
+}, E2E_TIMEOUT_MS);
 
 afterAll(async () => {
   await browser?.close();
   server?.kill();
   if (server) await server.exited;
   if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
-});
+}, E2E_TIMEOUT_MS);
 
 describe("cross-element annotation in a real browser", () => {
   test("selection across a link becomes a quoted block comment in Markdown", async () => {
@@ -106,7 +107,7 @@ describe("cross-element annotation in a real browser", () => {
     expect(item.anchor).toEqual({ block: "b0", quote: "the plan carefully" });
     expect(item.text).toBe("Explain this combined phrase.");
     await page.close();
-  });
+  }, E2E_TIMEOUT_MS);
 
   test("a rejected browser save keeps the typed draft available", async () => {
     const { page } = await trackedPage("rejected-save.md");
@@ -126,5 +127,5 @@ describe("cross-element annotation in a real browser", () => {
     expect(await page.locator("#edBody").inputValue()).toBe("Do not lose this draft.");
     expect(await page.locator("#edError").textContent()).toBe("Selection cannot map inline.");
     await page.close();
-  });
+  }, E2E_TIMEOUT_MS);
 });
