@@ -8,7 +8,7 @@
   "scripts": {
     "myd": "bun src/cli.ts",
     "test": "bun test",
-    "typecheck": "bunx tsc --noEmit"
+    "typecheck": "npx tsc --noEmit"
   },
   "dependencies": {
     "unified": "^11.0.5",

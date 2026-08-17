@@ -17,8 +17,9 @@ import { visit } from "unist-util-visit";
 import type { Root as MdRoot } from "mdast";
 import type { Root as HastRoot, Element } from "hast";
 import type { Doc } from "./doc.ts";
+import { renderExplainer } from "./explainer.ts";
 
-const RICH = new Set(["mermaid", "vega-lite", "vega", "chart", "html"]);
+const RICH = new Set(["mermaid", "vega-lite", "vega", "chart", "html", "explainer"]);
 
 /** mdast plugin: stash source offsets on every node's data.hProperties so they survive to hast. */
 function remarkPositions() {
@@ -51,6 +52,10 @@ function remarkRichFences() {
       let html: string;
       if (lang === "mermaid") html = `<div class="rich mermaid" data-pos="${pos}" data-bid="${bid}" data-lang="mermaid"><pre class="rich-src">${src}</pre></div>`;
       else if (lang === "html") html = `<div class="rich island" data-pos="${pos}" data-bid="${bid}" data-lang="html"><pre class="rich-src">${src}</pre></div>`;
+      else if (lang === "explainer") {
+        try { html = `<div class="rich explainer" data-pos="${pos}" data-bid="${bid}" data-lang="explainer"><pre class="rich-src">${src}</pre><div class="rich-view">${renderExplainer(node.value)}</div></div>`; }
+        catch (error) { html = `<div class="rich explainer invalid" data-pos="${pos}" data-bid="${bid}" data-lang="explainer"><pre class="rich-src">${src}</pre><div class="rich-error">Explainer: ${escapeHtml(error instanceof Error ? error.message : String(error))}</div></div>`; }
+      }
       else html = `<div class="rich vega" data-pos="${pos}" data-bid="${bid}" data-lang="${lang}"><pre class="rich-src">${src}</pre></div>`;
       parent.children[index] = { type: "html", value: html };
     });

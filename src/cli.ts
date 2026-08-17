@@ -18,9 +18,16 @@ for (let i = 0; i < argv.length; i++) {
 }
 const cmd = pos.shift();
 const JSON_OUT = !!flags.json;
+const DEFAULT_WAIT_TIMEOUT_SEC = 30 * 60;
 const out = (o: unknown, human?: string) => console.log(JSON_OUT ? JSON.stringify(o, null, 2) : (human ?? JSON.stringify(o, null, 2)));
 const die = (m: string, code = 1) => { console.error(m); process.exit(code); };
 const abs = (p?: string) => { if (!p) die("missing <file.md>"); const a = path.resolve(p!); if (!fs.existsSync(a)) die(`no such file: ${a}`); return a; };
+const waitTimeout = () => {
+  if (flags.timeout === undefined) return DEFAULT_WAIT_TIMEOUT_SEC;
+  const seconds = Number(flags.timeout);
+  if (!Number.isFinite(seconds) || seconds <= 0) die("--timeout must be a positive number of seconds");
+  return seconds;
+};
 
 async function serverAlive(): Promise<{ port: number; pid: number } | null> {
   try { const s = JSON.parse(fs.readFileSync(STATE_FILE, "utf8")); const r = await fetch(`http://localhost:${s.port}/api/health`, { signal: AbortSignal.timeout(800) }); if (r.ok) return s; } catch {}
@@ -48,13 +55,13 @@ function docUrl(port: number, file: string, reviewId?: string) {
 }
 function openBrowser(url: string) { if (process.env.MYD_NO_OPEN) return; try { spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref(); } catch {} }
 
-async function waitDone(port: number, file: string, timeoutSec?: number): Promise<any> {
+async function waitDone(port: number, file: string, timeoutSec: number): Promise<any> {
   return new Promise((res, rej) => {
     const ws = new WebSocket(`ws://localhost:${port}/ws?path=${encodeURIComponent(file)}`);
-    const t = timeoutSec ? setTimeout(() => { ws.close(); res({ timedOut: true }); }, timeoutSec * 1000) : null;
+    const t = setTimeout(() => { clearInterval(ping); ws.close(); res({ timedOut: true, timeoutSec }); }, timeoutSec * 1000);
     const ping = setInterval(() => { try { ws.send("ping"); } catch {} }, 20000);
-    ws.onmessage = (e) => { if (e.data === "pong") return; const m = JSON.parse(String(e.data)); if (m.type === "done") { clearInterval(ping); if (t) clearTimeout(t); ws.close(); res(m); } };
-    ws.onerror = (e) => { clearInterval(ping); rej(e); };
+    ws.onmessage = (e) => { if (e.data === "pong") return; const m = JSON.parse(String(e.data)); if (m.type === "done") { clearInterval(ping); clearTimeout(t); ws.close(); res(m); } };
+    ws.onerror = (e) => { clearInterval(ping); clearTimeout(t); rej(e); };
   });
 }
 
@@ -65,8 +72,8 @@ function blocksOf(file: string) {
 
 const HELP = `myd — Markdown viewer + annotations + agent CLI
 
-  myd view <file.md> [--wait] [--no-open]   open in the viewer (starts server); --wait blocks until Done Reviewing
-  myd wait <file.md> [--timeout S]          block until the user clicks Done Reviewing
+  myd view <file.md> [--wait] [--timeout S] [--no-open]   open in the viewer; --wait defaults to a 30-minute timeout
+  myd wait <file.md> [--timeout S]          block until Done Reviewing (default timeout: 1800 seconds)
   myd comments <file.md> [--all]            pending review items (comments/suggestions/replies) as JSON
   myd reply <file.md> <id> <message>        append a reply (by AI)
   myd resolve <file.md> <id> [--summary S]  mark an item resolved
@@ -137,12 +144,13 @@ switch (cmd) {
     const file = abs(pos[0]); const { port } = await ensureServer(); const { reviewId } = await trackReview(port, file); const url = docUrl(port, file, reviewId);
     if (!flags["no-open"]) openBrowser(url);
     if (!flags.wait) { out({ url, reviewId }, url); break; }
-    console.error(url); console.error("Waiting for Done Reviewing…");
-    const ev = await waitDone(port, file, flags.timeout ? Number(flags.timeout) : undefined);
+    const timeoutSec = waitTimeout();
+    console.error(url); console.error(`Waiting for Done Reviewing… (timeout: ${timeoutSec}s)`);
+    const ev = await waitDone(port, file, timeoutSec);
     out(ev, ev.timedOut ? "timed out" : `Review completed for ${file}${ev.note ? `\nNote: ${ev.note}` : ""}`);
     if (ev.timedOut) process.exit(1); break;
   }
-  case "wait": { const file = abs(pos[0]); const { port } = await ensureServer(); const ev = await waitDone(port, file, flags.timeout ? Number(flags.timeout) : undefined); out(ev, ev.timedOut ? "timed out" : `Review completed for ${file}${ev.note ? `\nNote: ${ev.note}` : ""}`); if (ev.timedOut) process.exit(1); break; }
+  case "wait": { const file = abs(pos[0]); const { port } = await ensureServer(); const ev = await waitDone(port, file, waitTimeout()); out(ev, ev.timedOut ? "timed out" : `Review completed for ${file}${ev.note ? `\nNote: ${ev.note}` : ""}`); if (ev.timedOut) process.exit(1); break; }
   case "comments": {
     const file = abs(pos[0]); const doc = loadDoc(file, fs.readFileSync(file, "utf8"));
     const items = flags.all ? doc.items : doc.items.filter((i) => i.status !== "resolved");

@@ -22,7 +22,7 @@ export type ReviewItem = {
   column: number;
   cleanOffset: number; // offsets in the "clean" (marker-stripped) source
   cleanEndOffset: number;
-  anchor?: { block?: string; target?: string } | null; // object anchors (extension)
+  anchor?: { block?: string; target?: string; quote?: string } | null; // object anchors (extension)
 };
 
 export type Doc = {
@@ -219,7 +219,7 @@ export function annotate(doc: Doc, start: number, end: number, ann: NewAnnotatio
 
 /** Comment anchored to an object (a whole block, or a target inside it), placed as a standalone
  * CriticMarkup comment on its own line right after the block; the object anchor lives in endmatter. */
-export function annotateObject(doc: Doc, blockOrigEnd: number, body: string, anchor: { block: string; target?: string }, by = "user", now = new Date().toISOString()): string {
+export function annotateObject(doc: Doc, blockOrigEnd: number, body: string, anchor: { block: string; target?: string; quote?: string }, by = "user", now = new Date().toISOString()): string {
   const id = nextId(doc, "c");
   const at = blockOrigEnd;
   const em: Endmatter = { raw: "", comments: { ...doc.endmatter.comments, [id]: { by, at: now, anchor } }, suggestions: { ...doc.endmatter.suggestions } };

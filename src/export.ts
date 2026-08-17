@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { loadDoc, type Doc } from "./doc.ts";
 import { renderDoc } from "./render.ts";
+import { islandExportHydrationSource } from "../web/island-bridge.js";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const NM = path.join(ROOT, "node_modules");
@@ -34,13 +35,15 @@ function inlineImages(html: string, docDir: string): string {
 const HYDRATE = `
 const dark = () => matchMedia("(prefers-color-scheme: dark)").matches;
 function addToggle(el){const b=document.createElement("button");b.className="src-toggle";b.textContent="source";b.onclick=()=>el.classList.toggle("show-src");el.prepend(b);}
+${islandExportHydrationSource()}
 (async()=>{
   const merm=[...document.querySelectorAll(".rich.mermaid")];
   if(merm.length&&window.mermaid){mermaid.initialize({startOnLoad:false,theme:dark()?"dark":"default",securityLevel:"strict"});let i=0;
     for(const el of merm){try{const {svg}=await mermaid.render("mm"+(i++),el.querySelector(".rich-src").textContent);const h=document.createElement("div");h.className="rich-view";h.innerHTML=svg;el.appendChild(h);addToggle(el);}catch(e){el.insertAdjacentHTML("beforeend",'<div class="rich-error">'+e.message+'</div>');}}}
   const vega=[...document.querySelectorAll(".rich.vega")];
   if(vega.length&&window.vegaEmbed){for(const el of vega){const h=document.createElement("div");h.className="rich-view";el.appendChild(h);try{await vegaEmbed(h,JSON.parse(el.querySelector(".rich-src").textContent),{actions:false,theme:dark()?"dark":undefined});addToggle(el);}catch(e){h.innerHTML='<div class="rich-error">'+e.message+'</div>';}}}
-  for(const el of document.querySelectorAll(".rich.island")){const f=document.createElement("iframe");f.className="rich-view island-frame";f.setAttribute("sandbox","allow-scripts");f.srcdoc=el.querySelector(".rich-src").textContent;el.appendChild(f);addToggle(el);f.addEventListener("load",()=>{try{f.style.height=(f.contentDocument.documentElement.scrollHeight+8)+"px"}catch{}});}
+  for(const el of document.querySelectorAll(".rich.island")){const f=document.createElement("iframe");f.className="rich-view island-frame";f.setAttribute("sandbox","allow-scripts");f.srcdoc=islandDocument(el.querySelector(".rich-src").textContent);el.appendChild(f);addToggle(el);}
+  for(const el of document.querySelectorAll(".rich.explainer")){addToggle(el);}
 })();`;
 
 export async function exportHtml(doc: Doc, opts: { title?: string } = {}): Promise<string> {

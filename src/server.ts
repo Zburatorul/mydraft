@@ -145,7 +145,7 @@ export function startServer(port = 7474) {
           requireTrackedReview(doc, b.reviewId, b.version);
           const blk = topBlocks(doc).find((x) => x.id === b.bid || `b${x.index}` === b.bid);
           if (!blk) return json({ error: `no block ${b.bid}` }, 404);
-          const next = annotateObject(doc, blk.end, b.body, { block: b.bid, ...(b.target ? { target: b.target } : {}) }, b.by);
+          const next = annotateObject(doc, blk.end, b.body, { block: b.bid, ...(b.target ? { target: b.target } : {}), ...(b.quote ? { quote: String(b.quote).slice(0, 500) } : {}) }, b.by);
           writeDoc(doc, next);
           return json({ ok: true }, 200);
         }

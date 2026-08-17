@@ -2,6 +2,7 @@
 import { isEditorSubmitShortcut } from "./shortcuts.js";
 import { reviewPresentation } from "./review-state.js";
 import { revisionLabel, revisionTitle } from "./revision-label.js";
+import { islandDocument, islandThemeMessage, parseIslandMessage } from "./island-bridge.js";
 const qs = new URLSearchParams(location.search);
 const docPath = qs.get("path");
 const reviewId = qs.get("review");
@@ -78,7 +79,7 @@ function fixRelativeImages() {
 // ---------- theme ----------
 const isDark = () => document.documentElement.dataset.theme ? document.documentElement.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
 (function initTheme() { const t = localStorage.getItem("myd-theme"); if (t) document.documentElement.dataset.theme = t; })();
-$("#themeBtn").onclick = () => { const next = isDark() ? "light" : "dark"; document.documentElement.dataset.theme = next; localStorage.setItem("myd-theme", next); docEl.querySelectorAll("[data-hydrated]").forEach((el) => { delete el.dataset.hydrated; el.querySelectorAll(".rich-view, .src-toggle, .obj-comment").forEach((x) => x.remove()); }); hydrateRich(loadSeq).then(paintHighlights); };
+$("#themeBtn").onclick = () => { const next = isDark() ? "light" : "dark"; document.documentElement.dataset.theme = next; localStorage.setItem("myd-theme", next); docEl.querySelectorAll("[data-hydrated]:not(.explainer)").forEach((el) => { delete el.dataset.hydrated; el.querySelectorAll(".rich-view, .src-toggle, .obj-comment").forEach((x) => x.remove()); }); hydrateRich(loadSeq).then(paintHighlights); };
 
 // ---------- rich blocks ----------
 let mermaidMod, vegaLoaded;
@@ -122,9 +123,15 @@ async function hydrateRich(seq) {
   for (const el of fresh(".rich.island")) {
     const src = el.querySelector(".rich-src").textContent;
     const f = document.createElement("iframe");
-    f.className = "rich-view island-frame"; f.setAttribute("sandbox", "allow-scripts"); f.srcdoc = src; f.loading = "lazy";
+    f.className = "rich-view island-frame"; f.setAttribute("sandbox", "allow-scripts"); f.srcdoc = islandDocument(src); f.loading = "lazy";
     el.appendChild(f); addSourceToggle(el);
-    f.addEventListener("load", () => { try { f.style.height = (f.contentDocument.documentElement.scrollHeight + 8) + "px"; } catch {} });
+    f.addEventListener("load", () => f.contentWindow?.postMessage(islandThemeMessage(dark ? "dark" : "light"), "*"));
+  }
+  for (const el of fresh(".rich.explainer")) {
+    addSourceToggle(el);
+    el.querySelectorAll("[data-myd-target]").forEach((target) => target.addEventListener("click", (event) => {
+      event.stopPropagation(); objectComment(el, target.dataset.mydTarget, event);
+    }));
   }
 }
 function addSourceToggle(el) {
@@ -134,6 +141,19 @@ function addSourceToggle(el) {
   c.onclick = (e) => objectComment(el, null, e); el.prepend(c);
 }
 function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
+
+window.addEventListener("message", (event) => {
+  const frame = [...docEl.querySelectorAll(".rich.island iframe")].find((candidate) => candidate.contentWindow === event.source);
+  if (!frame) return;
+  const message = parseIslandMessage(event.data);
+  if (!message) return;
+  if (message.type === "resize") { frame.style.height = `${message.height + 8}px`; return; }
+  const block = frame.closest(".rich.island");
+  if (!block) return;
+  const frameRect = frame.getBoundingClientRect();
+  const point = { left: frameRect.left + message.x, right: frameRect.left + message.x, top: frameRect.top + message.y, bottom: frameRect.top + message.y };
+  objectComment(block, message.target, { target: { getBoundingClientRect: () => point } }, message.text);
+});
 
 // ---------- highlights (CSS Custom Highlight API) ----------
 const canHighlight = "highlights" in CSS;
@@ -238,7 +258,7 @@ async function saveEditor() {
   const body = $("#edBody").value, repl = $("#edRepl").value;
   if (edTarget?.kind === "object") {
     if (!body.trim()) return;
-    const r = await fetch("/api/annotate-object", { method: "POST", body: JSON.stringify({ path: docPath, reviewId, version: state.version, bid: edTarget.blockEl.dataset.bid, target: edTarget.target, body, by: "user" }) });
+    const r = await fetch("/api/annotate-object", { method: "POST", body: JSON.stringify({ path: docPath, reviewId, version: state.version, bid: edTarget.blockEl.dataset.bid, target: edTarget.target, quote: edTarget.quote, body, by: "user" }) });
     if (!r.ok) alert("Failed to save comment");
     closeEditor(); return;
   }
@@ -252,10 +272,10 @@ async function saveEditor() {
 }
 document.addEventListener("mousedown", (e) => { if (!editor.hidden && !editor.contains(e.target) && !popover.contains(e.target)) { /* keep open while user reselects? close for simplicity */ if (!$("#edBody").value && !$("#edRepl").value) closeEditor(); } });
 
-function objectComment(blockEl, target, evt) {
+function objectComment(blockEl, target, evt, quote = null) {
   if (!reviewStatus?.tracked) return;
-  edMode = "comment"; edTarget = { kind: "object", blockEl, target }; pending = null;
-  $("#edAnchor").textContent = target ? `${blockEl.dataset.bid} › ${target}` : `${blockEl.dataset.bid} (whole block)`; $("#edAnchor").hidden = false;
+  edMode = "comment"; edTarget = { kind: "object", blockEl, target, quote }; pending = null;
+  $("#edAnchor").textContent = target ? `${blockEl.dataset.bid} › ${target}${quote ? `\n“${quote.slice(0, 160)}”` : ""}` : `${blockEl.dataset.bid} (whole block)`; $("#edAnchor").hidden = false;
   $("#edRepl").hidden = true; $("#edBody").value = ""; $("#edBody").placeholder = "Comment…";
   const rect = (evt?.target?.getBoundingClientRect?.()) ?? blockEl.getBoundingClientRect();
   placeEditor(rect); $("#edBody").focus();
@@ -270,10 +290,11 @@ function renderRail() {
   railEl.innerHTML = roots.map((it) => {
     const anchor = it.anchorText ?? it.originalText ?? "";
     const objAnchor = it.anchor ? `<span class="obj-tag">${escape(it.anchor.target ? `${it.anchor.block} › ${it.anchor.target}` : it.anchor.block)}</span>` : "";
+    const objQuote = it.anchor?.quote ? `<div class="anchor">“${escape(it.anchor.quote.slice(0, 160))}”</div>` : "";
     const sug = it.kind === "suggestion" ? `<div class="sug"><del>${escape(it.originalText ?? "")}</del> → <ins>${escape(it.replacementText ?? "")}</ins></div>` : "";
     return `<div class="thread ${it.status === "resolved" ? "resolved" : ""}" data-id="${it.id}">
       <div class="meta"><b>${escape(it.author ?? "?")}</b> <span class="id">${it.id}</span> ${objAnchor}<span class="spacer"></span>${it.status !== "resolved" ? `<button class="link" data-resolve="${it.id}">resolve</button>` : "<span class='id'>resolved</span>"}</div>
-      ${anchor && !it.anchor ? `<div class="anchor">“${escape(anchor.slice(0, 120))}”</div>` : ""}
+      ${anchor && !it.anchor ? `<div class="anchor">“${escape(anchor.slice(0, 120))}”</div>` : ""}${objQuote}
       ${sug}${it.kind === "suggestion" && it.text === it.replacementText ? "" : `<div class="body">${escape(it.text)}</div>`}
       ${replies(it.id).map((r) => `<div class="reply"><b>${escape(r.author ?? "?")}</b> ${escape(r.text)}</div>`).join("")}
       <form class="replyForm" data-id="${it.id}"><input placeholder="Reply…"><button class="link">send</button></form>
