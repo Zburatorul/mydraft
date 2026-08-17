@@ -10,7 +10,7 @@ const qs = new URLSearchParams(location.search);
 const docPath = qs.get("path");
 const reviewId = qs.get("review");
 const $ = (s) => document.querySelector(s);
-const docEl = $("#doc"), railEl = $("#threads"), statusEl = $("#status");
+const docEl = $("#doc"), railEl = $("#threads"), railPanel = $("#rail"), mainEl = $("main"), railToggle = $("#railToggle"), statusEl = $("#status");
 let state = { version: null, items: [], html: "" };
 let reviewStatus = null;
 let ws;
@@ -19,6 +19,19 @@ if (!docPath) { docEl.innerHTML = "<p>Open with <code>?path=/abs/file.md</code><
 const fileName = docPath.split("/").pop();
 document.title = fileName + " · myd";
 $("#title").textContent = fileName;
+
+const railMediaQuery = matchMedia("(max-width: 1200px)");
+let railPreference = null;
+function setRailOpen(open) {
+  railPanel.hidden = !open;
+  mainEl.classList.toggle("rail-closed", !open);
+  railToggle.setAttribute("aria-expanded", String(open));
+  railToggle.setAttribute("aria-label", open ? "Hide comments" : "Show comments");
+  railToggle.querySelector("[data-rail-label]").textContent = open ? "Hide comments" : "Show comments";
+}
+setRailOpen(!railMediaQuery.matches);
+railToggle.onclick = () => { railPreference = railPanel.hidden; setRailOpen(railPreference); };
+railMediaQuery.addEventListener("change", (event) => { if (railPreference === null) setRailOpen(!event.matches); });
 
 function applyReviewStatus(status) {
   reviewStatus = status;

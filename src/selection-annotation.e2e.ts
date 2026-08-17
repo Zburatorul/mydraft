@@ -37,9 +37,9 @@ async function startIsolatedServer() {
   baseUrl = `http://localhost:${port}`;
 }
 
-async function trackedPage(name: string) {
+async function trackedPage(name: string, source = SOURCE, viewport?: { width: number; height: number }) {
   const fixture = path.join(tempDir, name);
-  fs.writeFileSync(fixture, SOURCE);
+  fs.writeFileSync(fixture, source);
   const trackedResponse = await fetch(`${baseUrl}/api/track`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -47,9 +47,9 @@ async function trackedPage(name: string) {
   });
   expect(trackedResponse.ok).toBeTrue();
   const tracked = await trackedResponse.json() as { reviewId: string };
-  const page = await browser.newPage();
+  const page = await browser.newPage({ viewport });
   await page.goto(`${baseUrl}/?path=${encodeURIComponent(fixture)}&review=${encodeURIComponent(tracked.reviewId)}`);
-  await page.locator("#doc a").waitFor();
+  await page.locator("#doc > *").first().waitFor();
   return { fixture, page };
 }
 
@@ -121,6 +121,73 @@ describe("cross-element annotation in a real browser", () => {
     expect(await page.locator("#editor").isVisible()).toBeTrue();
     expect(await page.locator("#edBody").inputValue()).toBe("Do not lose this draft.");
     expect(await page.locator("#edError").textContent()).toBe("Selection cannot map inline.");
+    await page.close();
+  });
+
+  test("a narrow explainer stacks timing lanes without horizontal overflow", async () => {
+    const source = [
+      "# Review: responsive explainer {#title}",
+      "",
+      "```explainer {#responsive}",
+      "title: Local decisions",
+      "sections:",
+      "  - type: timing",
+      "    id: handoff",
+      "    parties: [Human, Agent]",
+      "    events:",
+      "      - id: human-event",
+      "        party: Human",
+      "        observes: a specific card needs attention",
+      "        action: comment on that object",
+      "        locality: local",
+      "        synchronization: communicated",
+      "      - id: agent-event",
+      "        party: Agent",
+      "        observes: responsive›human-event",
+      "        action: inspect and replace only that YAML mapping",
+      "        locality: local",
+      "        synchronization: communicated",
+      "```",
+      "",
+    ].join("\n");
+    const { page } = await trackedPage("narrow-explainer.md", source, { width: 760, height: 900 });
+    await page.locator(".timing-event").first().waitFor();
+
+    const [first, second] = await page.locator(".timing-lane").evaluateAll((lanes) => lanes.map((lane) => lane.getBoundingClientRect().toJSON()));
+    const overflow = await page.locator(".explainer-canvas").evaluate((canvas) => canvas.scrollWidth - canvas.clientWidth);
+
+    expect(second!.top).toBeGreaterThanOrEqual(first!.bottom);
+    expect(overflow).toBeLessThanOrEqual(1);
+
+    await page.setViewportSize({ width: 1100, height: 900 });
+    const screenshotWidthLanes = await page.locator(".timing-lane").evaluateAll((lanes) => lanes.map((lane) => lane.getBoundingClientRect().width));
+    expect(Math.min(...screenshotWidthLanes)).toBeGreaterThan(350);
+    expect(await page.locator("#rail").isHidden()).toBeTrue();
+
+    await page.setViewportSize({ width: 375, height: 800 });
+    const worstOverflow = await page.locator(".explainer-canvas, .explainer-canvas *").evaluateAll((elements) => Math.max(...elements.map((element) => element.scrollWidth - element.clientWidth)));
+    expect(worstOverflow).toBeLessThanOrEqual(1);
+    expect(await page.locator("#doc h1").evaluate((heading) => heading.scrollWidth - heading.clientWidth)).toBeLessThanOrEqual(1);
+    await page.close();
+  });
+
+  test("the comments rail defaults closed on a narrow screen and remains reopenable", async () => {
+    const { page } = await trackedPage("narrow-comments.md", SOURCE, { width: 1100, height: 900 });
+    const rail = page.locator("#rail");
+    const toggle = page.locator("#railToggle");
+
+    expect(await rail.isHidden()).toBeTrue();
+    expect(await toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(await page.locator("#doc").evaluate((doc) => doc.getBoundingClientRect().width)).toBeGreaterThan(900);
+
+    await toggle.click();
+    expect(await rail.isVisible()).toBeTrue();
+    expect(await toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1100);
+
+    await toggle.click();
+    expect(await rail.isHidden()).toBeTrue();
+    expect(await toggle.getAttribute("aria-expanded")).toBe("false");
     await page.close();
   });
 });
