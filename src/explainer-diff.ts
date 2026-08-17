@@ -1,5 +1,5 @@
 import { parse as parseYaml } from "yaml";
-import { renderExplainer } from "./explainer.ts";
+import { listExplainerSourceObjects } from "./semantic-objects.ts";
 
 type Primitive = string | number | boolean | null;
 type Fields = Map<string, Primitive>;
@@ -7,24 +7,18 @@ type Fields = Map<string, Primitive>;
 export type ExplainerChange = { id: string; field: string; before: Primitive; after: Primitive };
 
 function semanticObjects(source: string): Map<string, Fields> {
-  renderExplainer(source); // use the renderer's schema, ID, locality, and evidence validation contract
-  const root = parseYaml(source);
   const objects = new Map<string, Fields>();
-  const visit = (value: unknown) => {
-    if (Array.isArray(value)) { value.forEach(visit); return; }
-    if (!value || typeof value !== "object") return;
-    const record = value as Record<string, unknown>;
-    if (typeof record.id === "string") {
-      const fields = new Map<string, Primitive>();
-      for (const [field, fieldValue] of Object.entries(record)) {
-        if (field === "id" || field === "type" || (fieldValue !== null && typeof fieldValue === "object")) continue;
-        if (["string", "number", "boolean"].includes(typeof fieldValue) || fieldValue === null) fields.set(field, fieldValue as Primitive);
+  for (const object of listExplainerSourceObjects(source)) {
+    const record = parseYaml(object.source) as Record<string, unknown>;
+    const fields = new Map<string, Primitive>();
+    for (const [field, fieldValue] of Object.entries(record)) {
+      if (field === "id" || field === "type" || (fieldValue !== null && typeof fieldValue === "object")) continue;
+      if (["string", "number", "boolean"].includes(typeof fieldValue) || fieldValue === null) {
+        fields.set(field, fieldValue as Primitive);
       }
-      objects.set(record.id, fields);
     }
-    Object.values(record).forEach(visit);
-  };
-  visit(root);
+    objects.set(object.target, fields);
+  }
   return objects;
 }
 

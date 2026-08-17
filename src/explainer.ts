@@ -35,7 +35,7 @@ class TargetIds {
   }
 }
 
-const targetAttr = (id: string) => `data-myd-target="${escapeHtml(id)}"`;
+const targetAttr = (id: string) => `data-myd-target="${escapeHtml(id)}" tabindex="0" role="button" aria-label="Comment on ${escapeHtml(id)}"`;
 
 function renderTiming(section: UnknownRecord, ids: TargetIds, sectionIndex: number): string {
   const id = ids.add(section.id, `sections[${sectionIndex}].id`);
@@ -82,7 +82,7 @@ function renderMeasurements(section: UnknownRecord, ids: TargetIds, sectionIndex
     const unit = optionalText(value.unit);
     const status = requireChoice(value.status, `${cardId}.status`, EVIDENCE_STATUSES);
     const provenance = optionalText(value.provenance);
-    return `<article class="measurement-card obj" data-myd-target="${escapeHtml(cardId)}">
+    return `<article class="measurement-card obj" ${targetAttr(cardId)}>
       <div class="measurement-label">${escapeHtml(label)}</div>
       <div class="measurement-value">${escapeHtml(value.value)}${unit ? `<span>${escapeHtml(unit)}</span>` : ""}</div>
       <div class="measurement-meta"><span class="status status-${statusClass(status)}">${escapeHtml(status)}</span>${provenance ? `<span>${escapeHtml(provenance)}</span>` : ""}</div>
@@ -100,11 +100,25 @@ function renderResult(section: UnknownRecord, ids: TargetIds, sectionIndex: numb
   if (section.value === undefined || section.value === null) throw new Error(`${id}.value is required`);
   const status = requireChoice(section.status, `${id}.status`, EVIDENCE_STATUSES);
   const caveat = optionalText(section.caveat);
-  return `<section class="explainer-result obj" data-myd-target="${escapeHtml(id)}">
+  return `<section class="explainer-result obj" ${targetAttr(id)}>
     <div><div class="result-label">${escapeHtml(label)}</div><div class="result-status status status-${statusClass(status)}">${escapeHtml(status)}</div></div>
     <strong>${escapeHtml(section.value)}</strong>
     ${caveat ? `<p>${escapeHtml(caveat)}</p>` : ""}
   </section>`;
+}
+
+type SectionRenderer = (section: UnknownRecord, ids: TargetIds, sectionIndex: number) => string;
+type ObjectChild = { key: string; kind: string };
+const SECTION_DEFINITIONS: Record<string, { render: SectionRenderer; children: readonly ObjectChild[] }> = {
+  timing: { render: renderTiming, children: [{ key: "events", kind: "event" }] },
+  measurements: { render: renderMeasurements, children: [{ key: "cards", kind: "measurement" }] },
+  result: { render: renderResult, children: [] },
+};
+
+export function explainerSectionChildren(type: string): readonly ObjectChild[] {
+  const definition = SECTION_DEFINITIONS[type];
+  if (!definition) throw new Error(`unsupported explainer section type: ${type}`);
+  return definition.children;
 }
 
 export function renderExplainer(source: string): string {
@@ -119,10 +133,9 @@ export function renderExplainer(source: string): string {
   const renderedSections = sections.map((value, index) => {
     if (!isRecord(value)) throw new Error(`sections[${index}] must be an object`);
     const type = requireText(value.type, `sections[${index}].type`);
-    if (type === "timing") return renderTiming(value, ids, index);
-    if (type === "measurements") return renderMeasurements(value, ids, index);
-    if (type === "result") return renderResult(value, ids, index);
-    throw new Error(`unsupported explainer section type: ${type}`);
+    const definition = SECTION_DEFINITIONS[type];
+    if (!definition) throw new Error(`unsupported explainer section type: ${type}`);
+    return definition.render(value, ids, index);
   }).join("");
 
   return `<div class="explainer-canvas theme-${escapeHtml(theme)}">

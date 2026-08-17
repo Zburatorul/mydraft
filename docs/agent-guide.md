@@ -5,7 +5,7 @@ the human reads a rich rendering and annotates it; annotations are written back 
 Roughdraft-flavored CriticMarkup + YAML endmatter at exact source offsets; the agent reads/edits the
 file with the CLI. Everything below is discoverable via `myd help` and `myd guide <topic>`.
 
-Topics: `workflow` · `blocks` · `objects` · `rich` · `criticmarkup` · `export` · `api`
+Topics: `workflow` · `blocks` · `objects` · `explainers` · `rich` · `criticmarkup` · `export` · `api`
 
 ---
 
@@ -64,10 +64,36 @@ Positional ids shift when blocks are added; name anything you expect to revisit 
 | Whole block (any rich block) | 💬 button on the block | `@bid` — endmatter `anchor: {block}` |
 | Mermaid node / edge label / cluster | click it | `@bid›node:<id or label>` |
 | Vega/Vega-Lite mark | click it | `@bid›datum:{…}` |
+| Native explainer section/card/event/result | click it | `@bid›stable-id`; inspect or patch with `myd object` / `myd set-object` |
 | HTML island | 💬 on the block (inner elements are sandboxed) | `@bid` |
 | Whole document | Done Reviewing note | endmatter comment without anchor |
 
 To reference an object in your own reply, use the same notation (`b7`, `flow›node:Viewer`) — the user sees the tag in the rail. Object comments are placed as a standalone `{>>…<<}{#cN}` line right after the block so vanilla Roughdraft still reads them.
+
+## explainers — native semantic objects
+
+Use the smallest rendering form that makes the idea easy to read:
+
+1. Prose, lists, tables, and callouts for ordinary structure.
+2. Mermaid for relationships or sequence; Vega-Lite for data-driven charts.
+3. A native `explainer` fence when the reader should see and annotate stable semantic cards, events, or results.
+4. Sandboxed HTML only as an escape hatch for a composition the native forms cannot express.
+
+The current explainer catalog is deliberately small: `timing`, `measurements`, and `result`. Do not contort unrelated material into these shapes or invent unimplemented types. Add a catalog primitive only after a real document exposes a reusable reading job.
+
+Name every explainer fence and every object. Keep one reading question per fence, a short title and lede, and usually two to four sections. Labels should scan quickly; put qualifications in caveats or surrounding prose instead of packing paragraphs into cards. Timing events must say what each party locally observes before acting. Measurement/result status must distinguish `measured`, `communicated`, `derived`, `assumed`, or `speculative`; provenance is optional.
+
+The agent-side edit loop uses the exact `block›target` identity shown by review comments:
+
+```bash
+myd objects doc.md --json                         # inventory patchable native objects + document version
+myd object doc.md 'decision-epoch›alice-trigger' # standalone editable YAML for one object
+myd object doc.md 'decision-epoch›alice-trigger' > /tmp/alice.yaml
+# edit /tmp/alice.yaml; keep its id unchanged
+myd set-object doc.md 'decision-epoch›alice-trigger' --file /tmp/alice.yaml --version <version>
+```
+
+`set-object` replaces only that YAML mapping, preserves sibling formatting and review metadata byte-for-byte, validates the complete explainer before writing, and rejects stale versions. `objects` currently inventories native explainer objects; Mermaid and Vega targets are runtime-derived annotation targets, not source-patchable objects.
 
 ## rich — what renders
 
@@ -76,6 +102,7 @@ GFM (tables, task lists, strikethrough) · KaTeX `$…$`/`$$…$$` · Shiki code
 ````markdown
 ```mermaid {#name}        → diagram (nodes clickable)
 ```vega-lite {#name}      → chart from Vega-Lite JSON (marks clickable); also ```vega / ```chart
+```explainer {#name}      → native timing/measurement/result composition (stable ids clickable and patchable)
 ```html {#name}           → sandboxed iframe island (scripts allowed, isolated); use for interactive widgets
 ````
 

@@ -6,6 +6,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { STATE_FILE } from "./server.ts";
 import { loadDoc, reply as replyDoc, resolve as resolveDoc } from "./doc.ts";
 import { topBlocks } from "./render.ts";
+import { getSemanticObject, listSemanticObjects, replaceSemanticObject } from "./semantic-objects.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const argv = process.argv.slice(2);
@@ -81,11 +82,14 @@ const HELP = `myd — Markdown viewer + annotations + agent CLI
   myd block <file.md> <id>                  print one block's source
   myd set-block <file.md> <id> [--file F]   replace a block's source with stdin (or --file)
   myd insert <file.md> <id> [--file F]      insert stdin after block <id> (--before to insert before)
+  myd objects <file.md>                     list patchable semantic objects as block›target
+  myd object <file.md> <block›target>        print one semantic object's editable YAML
+  myd set-object <file.md> <block›target> --version V [--file F]   guarded validated replacement
   myd shot <file.md> [out.png] [--width W]  screenshot the rendered document (headless Chrome)
   myd export <file.md> [out.html]           single self-contained HTML (delivery artifact)
   myd publish <file.md> [--output-dir DIR] [--profile NAME]   immutable release bundle + archive index
   myd diff <old.md> <new.md> [out.md]       CriticMarkup diff between two versions
-  myd guide [topic]                         agent guide; topics: workflow blocks objects rich criticmarkup export api
+  myd guide [topic]                         agent guide; topics: workflow blocks objects explainers rich criticmarkup export api
   myd install-prompt [--claude|--codex|--file F] [--remove]   idempotently (re)install the myd block into agent instruction files (default: both)
   myd serve                                 run the server in the foreground
   myd status | stop
@@ -132,10 +136,10 @@ switch (cmd) {
   case "guide": {
     const g = fs.readFileSync(path.join(ROOT, "docs/agent-guide.md"), "utf8");
     if (!pos[0]) { console.log(g); break; }
-    const VERB_TOPIC: Record<string, string> = { view: "workflow", wait: "workflow", comments: "workflow", reply: "workflow", resolve: "workflow", diff: "workflow", shot: "workflow", blocks: "blocks", block: "blocks", "set-block": "blocks", insert: "blocks", export: "export", serve: "api", status: "api", annotate: "objects", comment: "objects", suggest: "objects", markup: "criticmarkup", mermaid: "rich", vega: "rich", html: "rich", math: "rich" };
+    const VERB_TOPIC: Record<string, string> = { view: "workflow", wait: "workflow", comments: "workflow", reply: "workflow", resolve: "workflow", diff: "workflow", shot: "workflow", blocks: "blocks", block: "blocks", "set-block": "blocks", insert: "blocks", object: "explainers", "set-object": "explainers", explainer: "explainers", export: "export", serve: "api", status: "api", annotate: "objects", comment: "objects", suggest: "objects", markup: "criticmarkup", mermaid: "rich", vega: "rich", html: "rich", math: "rich" };
     if (VERB_TOPIC[pos[0]]) pos[0] = VERB_TOPIC[pos[0]]!;
     const m = new RegExp(`\\n## ${pos[0]}\\b[\\s\\S]*?(?=\\n## |$)`).exec(g);
-    if (!m) die(`no topic ${pos[0]}; topics: workflow blocks objects rich criticmarkup export api`);
+    if (!m) die(`no topic ${pos[0]}; topics: workflow blocks objects explainers rich criticmarkup export api`);
     console.log(m![0].trim()); break;
   }
   case "serve": { const { startServer } = await import("./server.ts"); const s = startServer(Number(process.env.MYD_PORT ?? 7474)); console.log(`myd server on http://localhost:${s.port}`); break; }
@@ -164,6 +168,28 @@ switch (cmd) {
   case "resolve": { const file = abs(pos[0]); const doc = loadDoc(file, fs.readFileSync(file, "utf8")); fs.writeFileSync(file, resolveDoc(doc, pos[1]!, String(flags.by ?? "AI"), undefined, flags.summary ? String(flags.summary) : undefined)); out({ ok: true }, "resolved"); break; }
   case "blocks": { const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); out({ path: file, version: doc.version, blocks }, blocks.map((b) => `${b.id.padEnd(16)} ${b.type.padEnd(12)} ${b.head}`).join("\n")); break; }
   case "block": { const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); const b = blocks.find((x) => x.id === pos[1] || `b${x.index}` === pos[1]); if (!b) die(`no block ${pos[1]}`); process.stdout.write(doc.body.slice(b!.start, b!.end) + "\n"); break; }
+  case "objects": {
+    const file = abs(pos[0]); const doc = loadDoc(file, fs.readFileSync(file, "utf8")); let objects;
+    try { objects = listSemanticObjects(doc); } catch (error) { die(error instanceof Error ? error.message : String(error)); break; }
+    out({ path: file, version: doc.version, objects }, objects.map((object) => `${object.ref.padEnd(32)} ${object.kind.padEnd(14)} ${object.path}`).join("\n") || "no semantic objects"); break;
+  }
+  case "object": {
+    const file = abs(pos[0]); const doc = loadDoc(file, fs.readFileSync(file, "utf8")); const object = getSemanticObject(doc, pos[1] ?? "");
+    if (!object) die(`no semantic object ${pos[1] ?? ""}`);
+    out(object, object!.source); break;
+  }
+  case "set-object": {
+    const file = abs(pos[0]); const doc = loadDoc(file, fs.readFileSync(file, "utf8"));
+    if (!flags.version) die("set-object requires --version from myd objects --json");
+    if (flags.version !== doc.version) die(`version mismatch: file is ${doc.version}`, 3);
+    const replacement = flags.file ? fs.readFileSync(String(flags.file), "utf8") : await Bun.stdin.text();
+    let next: string;
+    try { next = replaceSemanticObject(doc, pos[1] ?? "", replacement); }
+    catch (error) { die(error instanceof Error ? error.message : String(error)); break; }
+    fs.writeFileSync(file, next!);
+    const version = loadDoc(file, next!).version;
+    out({ ok: true, ref: pos[1], version }, `set-object ${pos[1]} ok`); break;
+  }
   case "set-block": case "insert": {
     const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); const b = blocks.find((x) => x.id === pos[1] || `b${x.index}` === pos[1]); if (!b) die(`no block ${pos[1]}`);
     if (flags.version && flags.version !== doc.version) die(`version mismatch: file is ${doc.version}`, 3);

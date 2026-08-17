@@ -8,7 +8,7 @@ Small tools that make Roughdraft (`npm i -g roughdraft`) usable for human–agen
 | `bin/rd-shot FILE.md [OUT.png]` | Screenshot the rendered doc (headless Playwright, uses roughdraft's bundled browser). |
 | `bin/rd-diff OLD.md NEW.md [OUT.md]` | CriticMarkup diff between two versions, viewable in Roughdraft. |
 
-Rich documents can also use an `explainer` fence for native, responsive timing/measurement/result layouts. Authored object IDs become precise annotation targets. Sandboxed `html` fences remain available for one-off visual work; elements marked with `data-myd-id="…"` can report their identity and selected text through myd's narrow annotation bridge.
+Rich documents can also use an `explainer` fence for native, responsive timing/measurement/result layouts. Authored object IDs become precise annotation targets. Agents can inventory and surgically revise those same `block›target` objects with `myd objects`, `myd object`, and `myd set-object`; the full fence is validated before a guarded write. Sandboxed `html` fences remain available for one-off visual work; elements marked with `data-myd-id="…"` can report their identity and selected text through myd's narrow annotation bridge.
 
 ## Publish an immutable release
 

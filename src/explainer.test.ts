@@ -53,6 +53,7 @@ sections:
     expect(html).toContain('class="explainer-canvas theme-aurora"');
     expect(html).toContain('data-myd-target="local-recognition"');
     expect(html).toContain('data-myd-target="alice-trigger"');
+    expect(html).toContain('data-myd-target="alice-trigger" tabindex="0" role="button" aria-label="Comment on alice-trigger"');
     expect(html).toContain('data-myd-target="bob-trigger"');
     expect(html).toContain('data-myd-target="window"');
     expect(html).toContain('data-myd-target="ld-result"');

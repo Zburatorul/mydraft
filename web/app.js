@@ -147,9 +147,14 @@ async function hydrateRich(seq) {
   }
   for (const el of fresh(".rich.explainer")) {
     addSourceToggle(el);
-    el.querySelectorAll("[data-myd-target]").forEach((target) => target.addEventListener("click", (event) => {
-      event.stopPropagation(); objectComment(el, target.dataset.mydTarget, event);
-    }));
+    el.querySelectorAll("[data-myd-target]").forEach((target) => {
+      const comment = (event) => { event.stopPropagation(); objectComment(el, target.dataset.mydTarget, event); };
+      target.addEventListener("click", comment);
+      target.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault(); comment(event);
+      });
+    });
   }
 }
 function addSourceToggle(el) {
