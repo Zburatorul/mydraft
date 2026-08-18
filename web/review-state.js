@@ -1,6 +1,7 @@
 const LABELS = {
   completed: "review closed",
   superseded: "outdated review",
+  archived: "archived review",
   unknown: "not tracked",
 };
 

@@ -7,18 +7,40 @@ import { resolveTheme, themeTogglePresentation, toggledTheme } from "./theme.js"
 import { clickAwayDismissal } from "./annotation-overlay.js";
 import { annotationSaveDisposition } from "./annotation-save.js";
 const qs = new URLSearchParams(location.search);
-const docPath = qs.get("path");
-const reviewId = qs.get("review");
+const routeReview = /^\/review\/([^/]+)\/?$/.exec(location.pathname);
+const reviewId = routeReview ? decodeURIComponent(routeReview[1]) : qs.get("review");
+let docPath = qs.get("path");
 const $ = (s) => document.querySelector(s);
 const docEl = $("#doc"), railEl = $("#threads"), railPanel = $("#rail"), mainEl = $("main"), railToggle = $("#railToggle"), statusEl = $("#status");
 let state = { version: null, items: [], html: "" };
 let reviewStatus = null;
 let ws;
 
-if (!docPath) { docEl.innerHTML = "<p>Open with <code>?path=/abs/file.md</code></p>"; throw new Error("no path"); }
-const fileName = docPath.split("/").pop();
-document.title = fileName + " · myd";
-$("#title").textContent = fileName;
+if (!docPath && !reviewId) { docEl.innerHTML = "<p>Open with <code>myd view /abs/file.md</code></p>"; throw new Error("no review or path"); }
+let fileName = docPath?.split("/").pop() ?? "review";
+function setDocumentTitle(title) {
+  fileName = title || docPath?.split("/").pop() || "review";
+  document.title = fileName + " · myd";
+  $("#title").textContent = fileName;
+}
+setDocumentTitle(fileName);
+
+async function resolveReviewRoute() {
+  if (docPath || !reviewId) return true;
+  const response = await fetch(`/api/reviews/${encodeURIComponent(reviewId)}`);
+  if (!response.ok) {
+    statusEl.textContent = response.status === 404 ? "review not found" : "review load failed";
+    return false;
+  }
+  const { review } = await response.json();
+  docPath = review.path;
+  setDocumentTitle(review.title);
+  return true;
+}
+
+function documentQuery() {
+  return reviewId ? `review=${encodeURIComponent(reviewId)}` : `path=${encodeURIComponent(docPath)}`;
+}
 
 const railMediaQuery = matchMedia("(max-width: 1200px)");
 let railPreference = null;
@@ -55,7 +77,7 @@ function updateWriteControls() {
 async function checkTracking() {
   if (!state.version) return;
   try {
-    const r = await fetch(`/api/tracking?path=${encodeURIComponent(docPath)}&review=${encodeURIComponent(reviewId ?? "")}&version=${encodeURIComponent(state.version)}`);
+    const r = await fetch(`/api/tracking?${documentQuery()}&version=${encodeURIComponent(state.version)}`);
     if (r.ok) applyReviewStatus(await r.json());
   } catch {
     // A network interruption is not evidence that this review was deprecated.
@@ -66,7 +88,7 @@ async function checkTracking() {
 let loadSeq = 0;
 async function load() {
   const seq = ++loadSeq;
-  const r = await fetch(`/api/doc?path=${encodeURIComponent(docPath)}`);
+  const r = await fetch(`/api/doc?${documentQuery()}`);
   if (!r.ok) { statusEl.textContent = "load failed"; return; }
   const data = await r.json();
   if (seq !== loadSeq) return; // a newer load superseded this one
@@ -88,7 +110,7 @@ function fixRelativeImages() {
   for (const img of docEl.querySelectorAll("img[src]")) {
     const src = img.getAttribute("src");
     if (/^(https?:|data:|\/)/.test(src)) continue;
-    img.src = `/api/raw?path=${encodeURIComponent(docPath)}&rel=${encodeURIComponent(src)}`;
+    img.src = `/api/raw?${documentQuery()}&rel=${encodeURIComponent(src)}`;
   }
 }
 
@@ -405,7 +427,7 @@ $("#doneDlg").addEventListener("close", async () => {
 
 // ---------- live ----------
 function connect() {
-  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?path=${encodeURIComponent(docPath)}`);
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?${documentQuery()}`);
   ws.onmessage = (e) => {
     if (e.data === "pong") return;
     const m = JSON.parse(e.data);
@@ -419,4 +441,8 @@ const trackingTimer = setInterval(checkTracking, 15000);
 window.addEventListener("focus", checkTracking);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) checkTracking(); });
 window.addEventListener("pagehide", () => clearInterval(trackingTimer));
-connect(); load();
+resolveReviewRoute().then((resolved) => {
+  if (!resolved) return;
+  connect();
+  load();
+});

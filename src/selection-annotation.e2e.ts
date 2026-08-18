@@ -41,15 +41,17 @@ async function startIsolatedServer() {
 async function trackedPage(name: string, source = SOURCE, viewport?: { width: number; height: number }) {
   const fixture = path.join(tempDir, name);
   fs.writeFileSync(fixture, source);
-  const trackedResponse = await fetch(`${baseUrl}/api/track`, {
+  const trackedResponse = await fetch(`${baseUrl}/api/reviews`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ path: fixture }),
   });
+  expect(trackedResponse.status).toBe(201);
   expect(trackedResponse.ok).toBeTrue();
   const tracked = await trackedResponse.json() as { reviewId: string };
   const page = await browser.newPage({ viewport });
-  await page.goto(`${baseUrl}/?path=${encodeURIComponent(fixture)}&review=${encodeURIComponent(tracked.reviewId)}`);
+  await page.goto(`${baseUrl}/review/${encodeURIComponent(tracked.reviewId)}`);
+  expect(page.url()).not.toContain(encodeURIComponent(fixture));
   await page.locator("#doc > *").first().waitFor();
   return { fixture, page };
 }
