@@ -1,5 +1,5 @@
 // myd viewer: render → hydrate rich blocks → paint highlights → capture annotations.
-import { isEditorSubmitShortcut } from "./shortcuts.js";
+import { isEditorSubmitShortcut, isModifiedEnterShortcut } from "./shortcuts.js";
 import { reviewPresentation } from "./review-state.js";
 import { revisionLabel, revisionTitle } from "./revision-label.js";
 import { islandDocument, islandThemeMessage, parseIslandMessage } from "./island-bridge.js";
@@ -384,7 +384,16 @@ function scrollToItem(id) {
 function escape(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
 // ---------- done ----------
-$("#doneBtn").onclick = () => { if (reviewStatus?.tracked) $("#doneDlg").showModal(); };
+$("#doneBtn").onclick = () => {
+  if (!reviewStatus?.tracked) return;
+  $("#doneDlg").showModal();
+  $("#doneNote").focus();
+};
+$("#doneDlg").addEventListener("keydown", (event) => {
+  if (!isModifiedEnterShortcut(event)) return;
+  event.preventDefault();
+  $("#doneDlg").close("ok");
+});
 $("#doneDlg").addEventListener("close", async () => {
   if ($("#doneDlg").returnValue !== "ok") return;
   const r = await fetch("/api/done", { method: "POST", body: JSON.stringify({ path: docPath, reviewId, version: state.version, note: $("#doneNote").value, by: "user" }) });

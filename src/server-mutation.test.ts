@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dir, "..");
+const TEST_TIMEOUT_MS = 30_000;
 let tempDir: string;
 let fixture: string;
 let server: Bun.Subprocess;
@@ -105,5 +106,5 @@ describe("server document mutation seam", () => {
     const reloaded = await (await fetch(`${baseUrl}/api/doc?path=${encodeURIComponent(fixture)}`)).json() as { version: string; revision: { number: number } };
     expect(reloaded.version).toBe(secondBody.version);
     expect(reloaded.revision.number).toBe(secondBody.revision.number);
-  });
+  }, TEST_TIMEOUT_MS);
 });

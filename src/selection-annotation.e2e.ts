@@ -168,6 +168,39 @@ describe("cross-element annotation in a real browser", () => {
     await page.close();
   }, E2E_TIMEOUT_MS);
 
+  test("the Done note keeps focus and its draft across a live document refresh", async () => {
+    const { fixture, page } = await trackedPage("done-focus.md", SOURCE, { width: 1400, height: 900 });
+    await page.locator("#doneBtn").click();
+
+    const note = page.locator("#doneNote");
+    await note.click();
+    await note.pressSequentially("Keep this overall note", { delay: 20 });
+    expect(await note.evaluate((textarea) => textarea === document.activeElement)).toBeTrue();
+
+    const reloaded = page.waitForResponse((response) => response.url().includes("/api/doc?") && response.request().method() === "GET");
+    fs.appendFileSync(fixture, "\n");
+    await reloaded;
+
+    expect(await note.evaluate((textarea) => textarea === document.activeElement)).toBeTrue();
+    expect(await note.inputValue()).toBe("Keep this overall note");
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
+  test("Ctrl+Enter submits the Done note", async () => {
+    const { page } = await trackedPage("done-shortcut.md");
+    await page.locator("#doneBtn").click();
+    const note = page.locator("#doneNote");
+    await note.fill("Ready for the agent.");
+
+    const submitted = page.waitForResponse((response) => response.url().endsWith("/api/done") && response.request().method() === "POST");
+    await note.press("Control+Enter");
+    const response = await submitted;
+
+    expect(response.status()).toBe(200);
+    expect(await page.locator("#doneDlg").isVisible()).toBeFalse();
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
   test("a narrow explainer stacks timing lanes without horizontal overflow", async () => {
     const source = [
       "# Review: responsive explainer {#title}",

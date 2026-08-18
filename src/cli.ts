@@ -84,9 +84,9 @@ const HELP = `myd — Markdown viewer + annotations + agent CLI
   myd reply <file.md> <id> <message>        append a reply (by AI)
   myd resolve <file.md> <id> [--summary S]  mark an item resolved
   myd blocks <file.md>                      list blocks with ids, types, offsets
-  myd block <file.md> <id>                  print one block's source
-  myd set-block <file.md> <id> --version V [--file F]   replace a block's source with stdin (or --file)
-  myd insert <file.md> <id> --version V [--file F]      insert stdin after block <id> (--before to insert before)
+  myd block <file.md> <id>                  print one block's source (--json adds version and metadata)
+  myd set-block <file.md> <id> --version V [--expect G] [--file F]   replace a block; positional ids require guard G
+  myd insert <file.md> <id> --version V [--expect G] [--file F]      insert by block; positional ids require guard G
   myd objects <file.md>                     list patchable semantic objects as block›target
   myd object <file.md> <block›target>        print one semantic object's editable YAML
   myd set-object <file.md> <block›target> --version V [--file F]   guarded validated replacement
@@ -163,10 +163,22 @@ switch (cmd) {
   case "wait": { const file = abs(pos[0]); const { port } = await ensureServer(); const ev = await waitDone(port, file, waitTimeout()); out(ev, ev.timedOut ? "timed out" : `Review completed for ${file}${ev.note ? `\nNote: ${ev.note}` : ""}`); if (ev.timedOut) process.exit(1); break; }
   case "comments": {
     const file = abs(pos[0]); const doc = loadDoc(file, fs.readFileSync(file, "utf8"));
-    const items = flags.all ? doc.items : doc.items.filter((i) => i.status !== "resolved");
+    const resolved = new Set(doc.items.filter((item) => item.status === "resolved").map((item) => item.id));
+    const items = flags.all ? doc.items : doc.items.filter((item) => item.status !== "resolved" && (!item.parentId || !resolved.has(item.parentId)));
+    const blocks = topBlocks(doc);
+    const contextFor = (item: typeof items[number]) => {
+      if ((!item.anchorText && !item.originalText) || item.parentId || item.anchor) return undefined;
+      const block = blocks.find((candidate) => item.offset >= candidate.start && item.endOffset <= candidate.end);
+      const blockStart = block ? doc.origToClean(block.start) : Math.max(0, item.cleanOffset - 100);
+      const blockEnd = block ? doc.origToClean(block.end) : Math.min(doc.clean.length, item.cleanEndOffset + 100);
+      const from = blockEnd - blockStart <= 280 ? blockStart : Math.max(blockStart, item.cleanOffset - 100);
+      const to = blockEnd - blockStart <= 280 ? blockEnd : Math.min(blockEnd, item.cleanEndOffset + 100);
+      const snippet = doc.clean.slice(from, to).replace(/\s+/g, " ").trim();
+      return `${from > blockStart ? "…" : ""}${snippet}${to < blockEnd ? "…" : ""}`;
+    };
     // document-level notes (Done Reviewing notes): a comment with no anchor text, no object anchor, no parent
-    const slim = items.map(({ id, kind, suggestionKind, parentId, author, text, anchorText, originalText, replacementText, status, line, anchor }) => ({ id, kind: kind === "comment" && !anchorText && !anchor && !parentId ? "note" as const : kind, suggestionKind, parentId, author, status, line, anchorText, originalText, replacementText, anchor, text }));
-    out({ path: file, version: doc.version, items: slim }, slim.map((i) => `${i.id} [${i.kind === "note" ? "note — document-level, from Done Reviewing" : i.kind}${i.parentId ? `→${i.parentId}` : ""}] ${i.author ?? "?"} L${i.line}${i.anchorText ? ` “${i.anchorText.slice(0, 60)}”` : ""}${i.anchor ? ` @${i.anchor.block}${i.anchor.target ? "›" + i.anchor.target : ""}` : ""}\n    ${i.kind === "suggestion" ? `${i.originalText} → ${i.replacementText}  ` : ""}${i.text}`).join("\n") + (slim.length ? `\n\nNext: myd reply ${JSON.stringify(file)} <id> "…" (questions for the user go here too) · myd blocks ${JSON.stringify(file)} --json to get the version before myd set-block/insert · myd resolve <id> · then hand back: myd view ${JSON.stringify(file)} --wait` : "") || "no pending items");
+    const slim = items.map(({ id, kind, suggestionKind, parentId, author, text, anchorText, originalText, replacementText, status, line, anchor }, index) => ({ id, kind: kind === "comment" && !anchorText && !anchor && !parentId ? "note" as const : kind, suggestionKind, parentId, author, status, line, anchorText, originalText, replacementText, anchor, context: contextFor(items[index]!), text }));
+    out({ path: file, version: doc.version, items: slim }, slim.map((i) => `${i.id} [${i.kind === "note" ? "note — document-level, from Done Reviewing" : i.kind}${i.parentId ? `→${i.parentId}` : ""}] ${i.author ?? "?"} L${i.line}${i.anchorText ? ` “${i.anchorText.slice(0, 60)}”` : ""}${i.anchor ? ` @${i.anchor.block}${i.anchor.target ? "›" + i.anchor.target : ""}` : ""}\n    ${i.kind === "suggestion" ? `${i.originalText} → ${i.replacementText}  ` : ""}${i.text}${i.context ? `\n    context: ${i.context}` : ""}`).join("\n") + (slim.length ? `\n\nNext: myd reply ${JSON.stringify(file)} <id> "…" (questions for the user go here too) · myd blocks ${JSON.stringify(file)} --json to get the version and positional guard before myd set-block/insert · myd resolve <id> · then hand back: myd view ${JSON.stringify(file)}` : "") || "no pending items");
     break;
   }
   case "reply": {
@@ -185,8 +197,8 @@ switch (cmd) {
     } catch (error) { mutationError(error); }
     break;
   }
-  case "blocks": { const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); out({ path: file, version: doc.version, blocks }, blocks.map((b) => `${b.id.padEnd(16)} ${b.type.padEnd(12)} ${b.head}`).join("\n")); break; }
-  case "block": { const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); const b = blocks.find((x) => x.id === pos[1] || `b${x.index}` === pos[1]); if (!b) die(`no block ${pos[1]}`); process.stdout.write(doc.body.slice(b!.start, b!.end) + "\n"); break; }
+  case "blocks": { const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); out({ path: file, version: doc.version, blocks }, blocks.map((b) => `${b.id.padEnd(16)} ${b.type.padEnd(12)} ${b.guard} ${b.head}`).join("\n")); break; }
+  case "block": { const file = abs(pos[0]); const { doc, blocks } = blocksOf(file); const b = blocks.find((x) => x.id === pos[1] || `b${x.index}` === pos[1]); if (!b) die(`no block ${pos[1]}`); const source = doc.body.slice(b!.start, b!.end); if (JSON_OUT) out({ path: file, version: doc.version, block: b, source }); else process.stdout.write(source + "\n"); break; }
   case "objects": {
     const file = abs(pos[0]); const doc = loadDoc(file, fs.readFileSync(file, "utf8")); let objects;
     try { objects = listSemanticObjects(doc); } catch (error) { die(error instanceof Error ? error.message : String(error)); break; }
@@ -211,18 +223,22 @@ switch (cmd) {
     const file = abs(pos[0]);
     if (!flags.version) die(`${cmd} requires --version from myd blocks --json`);
     const content = (flags.file ? fs.readFileSync(String(flags.file), "utf8") : await Bun.stdin.text()).replace(/\s+$/, "");
+    let positional = false;
     try {
       const result = mutateDocument(file, (doc) => {
         const blocks = topBlocks(doc);
         const b = blocks.find((x) => x.id === pos[1] || `b${x.index}` === pos[1]);
         if (!b) throw new Error(`no block ${pos[1]}`);
+        positional = !b.name;
+        if (positional && !flags.expect) throw new Error(`positional block ${pos[1]} requires --expect <guard> from myd blocks --json; re-list blocks after every mutation`);
+        if (positional && flags.expect !== b.guard) throw new Error(`positional block ${pos[1]} no longer matches --expect; re-list blocks before editing again`);
         let body: string;
         if (cmd === "set-block") body = doc.body.slice(0, b.start) + content + doc.body.slice(b.end);
         else if (flags.before) body = doc.body.slice(0, b.start) + content + "\n\n" + doc.body.slice(b.start);
         else body = doc.body.slice(0, b.end) + "\n\n" + content + doc.body.slice(b.end);
         return body + doc.endmatter.raw;
       }, { expectedVersion: String(flags.version) });
-      out({ ok: true, block: pos[1], previousVersion: result.previousVersion, version: result.version }, `${cmd} ${pos[1]} ok`);
+      out({ ok: true, block: pos[1], previousVersion: result.previousVersion, version: result.version, relistRequired: positional }, `${cmd} ${pos[1]} ok${positional ? "; re-list blocks before another positional edit" : ""}`);
     } catch (error) { mutationError(error); }
     break;
   }

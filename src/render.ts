@@ -16,7 +16,7 @@ import rehypeStringify from "rehype-stringify";
 import { visit } from "unist-util-visit";
 import type { Root as MdRoot } from "mdast";
 import type { Root as HastRoot, Element } from "hast";
-import type { Doc } from "./doc.ts";
+import { hashVersion, type Doc } from "./doc.ts";
 import { renderExplainer } from "./explainer.ts";
 
 const RICH = new Set(["mermaid", "vega-lite", "vega", "chart", "html", "explainer"]);
@@ -103,7 +103,7 @@ function getProcessor() {
   return processor!;
 }
 
-export type Block = { id: string; index: number; name: string | null; type: string; start: number; end: number; head: string };
+export type Block = { id: string; index: number; name: string | null; type: string; start: number; end: number; head: string; guard: string };
 /** Top-level blocks of doc.body with ORIGINAL offsets (via clean→orig map), ids b0..bn matching data-bid. */
 /** Optional stable name for a block: heading `## Title {#name}`, or fence info string ```` ```mermaid {#name} ````. */
 export function blockName(c: any, clean: string): string | null {
@@ -117,7 +117,8 @@ export function topBlocks(doc: Doc): Block[] {
     const s = doc.cleanToOrig(c.position.start.offset), e = doc.cleanToOrig(c.position.end.offset);
     const type = c.type === "heading" ? `h${c.depth}` : c.type === "code" ? `code:${c.lang ?? ""}` : c.type === "paragraph" ? "para" : c.type;
     const name = blockName(c, doc.clean);
-    return { id: name ?? `b${i}`, index: i, name, type, start: s, end: e, head: doc.body.slice(s, e).split("\n")[0]!.slice(0, 80) };
+    const id = name ?? `b${i}`;
+    return { id, index: i, name, type, start: s, end: e, head: doc.body.slice(s, e).split("\n")[0]!.slice(0, 80), guard: hashVersion(`${doc.version}\0${id}`) };
   });
 }
 

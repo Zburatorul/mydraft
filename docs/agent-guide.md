@@ -39,23 +39,27 @@ c10 [comment] user L54                  ← document-level comment (the Done not
 Blocks are the top-level Markdown nodes: `b0…bn` positionally, or a **stable name** when the source carries one:
 
 ```markdown
-## Results {#results}                 ← heading name (stripped from display, becomes the element id)
+### Results {#results}                ← heading name (stripped from display, becomes the element id)
 ```mermaid {#flow}                    ← fence name on the info string
 ```
 
 ```bash
-myd blocks doc.md                     # id  type  first-line          (types: h1..h6, para, code:LANG, list, table, blockquote, math, html)
-myd block doc.md flow                 # print that block's source
-myd blocks doc.md --json             # capture the current document version
+myd blocks doc.md                     # id  type  guard  first-line   (types: h1..h6, para, code:LANG, list, table, blockquote, math, html)
+myd block doc.md flow --json          # full source, current version, and block metadata
+myd blocks doc.md --json             # capture version plus each positional block's guard
 myd set-block doc.md flow --version <v> <<'EOF' # version is required for content-derived edits
 ```mermaid {#flow}
 graph LR; A-->B
 ```
 EOF
 myd insert doc.md results --before --version <v> <<'EOF' … EOF   # insert before/after a block; obtain <v> from `myd blocks --json`
+myd set-block doc.md b17 --version <v> --expect <guard> <<'EOF' … EOF  # positional id: guard is mandatory
 ```
 
 Positional ids shift when blocks are added; name anything you expect to revisit or that the user might comment on.
+
+> [!IMPORTANT]
+> **Re-list after every mutation before using another positional `bN` id.** A positional edit requires both the current document `--version` and that listing's per-block `--expect <guard>`. Any mutation invalidates all positional guards, so pairing a newly returned version with an old `bN` fails instead of editing shifted content. Authored names do not require `--expect` because their identity is stable.
 
 ## objects — what can be commented on (the annotation inventory)
 
@@ -70,6 +74,8 @@ Positional ids shift when blocks are added; name anything you expect to revisit 
 | Whole document | Done Reviewing note | endmatter comment without anchor |
 
 To reference an object in your own reply, use the same notation (`b7`, `flow›node:Viewer`) — the user sees the tag in the rail. Object comments are placed as a standalone `{>>…<<}{#cN}` line right after the block so vanilla Roughdraft still reads them.
+
+Only the CLI kind `[note — document-level, from Done Reviewing]` has the special “read but do not reply or resolve” treatment. Anything with an inline or object anchor is a normal `[comment]`, even if its wording sounds like an overall note.
 
 ## explainers — native semantic objects
 

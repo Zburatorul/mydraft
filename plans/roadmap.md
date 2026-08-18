@@ -10,11 +10,12 @@ The priority order is fixed by [ADR 0003](../docs/decisions/0003-prioritize-coll
 ```mermaid {#roadmap-flow}
 flowchart TB
   D["DONE · reliable collaboration substrate<br/>rich review · semantic IDs · guarded writes"]
-  N["NOW · explainer collaboration ergonomics<br/>prove the object-level edit loop in real reviews"]
+  N["NOW · mutation safety<br/>fail closed · make mistakes recoverable"]
+  R["THEN · revision confidence<br/>show what changed since review opened"]
   C["NEXT · grow the catalog carefully<br/>one validated reading job at a time"]
   G["NEXT · strengthen agent guidance<br/>teach composition only for implemented objects"]
   L["LATER · optional workflows<br/>publishing checks · durable events · provenance"]
-  D --> N --> C --> G --> L
+  D --> N --> R --> C --> G --> L
 
   classDef done fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px;
   classDef now fill:#ede9fe,stroke:#7c3aed,color:#3b0764,stroke-width:3px;
@@ -22,7 +23,7 @@ flowchart TB
   classDef later fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px;
   class D done;
   class N now;
-  class C,G next;
+  class R,C,G next;
   class L later;
 ```
 
@@ -31,26 +32,33 @@ flowchart TB
 - Markdown remains the source; GFM, math, code, Mermaid, Vega, native explainers, and sandboxed HTML render richly.
 - Humans can annotate text, blocks, diagrams, and semantic explainer objects; comments, suggestions, replies, resolutions, and review revisions round-trip through the source.
 - HTML islands have a narrow bridge for sizing, theme, click-away behavior, and identified object comments.
-- Native explainer v0 supports `timing`, `measurements`, and `result`, including validation against silently global timing signals.
+- Native explainer v0 supports `timing`, `measurements`, and `result`, including technical validation against silently global timing signals. Timing has not yet been exercised in the user's real work.
 - Agents can inventory, inspect, and guardedly replace one native object with `myd objects`, `myd object`, and `myd set-object`. A small semantic diff names changed scalar fields by stable object ID.
 - CLI and HTTP document writers now cross one guarded mutation seam that freshly reads canonical Markdown, applies operation-appropriate version checks, writes atomically, and returns consistent versions and conflicts.
 - The viewer has the ergonomic baseline now expected of every feature: light/dark mode, responsive layouts, a collapsible comments rail, click-away dismissal, nonblocking handoff, and reply drafts that survive live reloads.
 - `myd publish` has a deliberately thin transaction core: immutable local releases, standalone HTML, a manifest and archive index, validation before promotion, and concurrency protection. Generated releases remain outside Git by default.
 
-## Now: validate the complete object-edit loop {#now}
+## Now: make document mutations safe and recoverable {#now}
 
-Use the current semantic-object explainer as the acceptance document. Complete one or more real review rounds in which:
+A real agent edit sequence exposed a data-loss class that outranks presentation work: after one positional `set-block` inserted an extra Markdown node, the agent paired the returned current version with another `bN` from its old listing. The version was fresh but the identity was stale, so myd silently replaced the wrong block.
 
-1. the human can discover and comment on a specific visual object on desktop and a narrow screen;
-2. `myd comments` reports the same stable `block›target` identity;
-3. the agent inspects and changes only that object's YAML mapping;
-4. the page updates without losing comments, drafts, focus, or review state; and
-5. the revised explanation is materially easier to understand—not merely more colorful.
+The immediate prevention is implemented: every positional block listing now carries an opaque guard bound to that document version and position. `set-block` and `insert` require it as `--expect`; every mutation invalidates all positional guards and forces a re-list. Authored block names remain stable and do not need the extra guard. `myd block ID --json` now returns the complete source, version, and metadata for a final pre-write check.
 
-The current human review is the limiting input. Until it reveals a repeated problem, prefer fixes, tests, and simplification of this loop over adding abstractions.
+The next safety slice is the smallest local recovery mechanism for non-Git documents: preserve the exact pre-mutation source and expose one guarded undo operation. Do not build a history browser, branching revision model, provenance system, or general snapshot platform around it.
+
+## Then: make revisions easy to trust {#revision-confidence}
+
+The first real review of the validation guide advanced the evidence beyond the roadmap's earlier state:
+
+- approximate, mid-word selections are normal human behavior, so `myd comments` now includes surrounding source context for the agent;
+- reply and Done-note focus are protected by browser regressions across live refreshes, and the Done note now supports Ctrl/Command+Enter;
+- explanatory documents need visual models where the subject admits one, rather than uniformly styled prose; and
+- **revision verification is the largest remaining collaboration gap**: after an agent edit, the human needs to see what changed without rereading the page or opening a Git diff.
+
+Implement the smallest review-relative change view: compare the version captured when the review opened with the current document, then name changed stable headings/blocks and semantic objects in a compact summary. Reuse existing document revisions, block IDs, and semantic diffing. Do not add rollback, provenance, a revision browser, or a general event journal.
 
 > [!NOTE]
-> **Immediate next decision:** after the current review, identify the single largest remaining collaboration friction. Fix that friction or add one object type only if the review demonstrates that the existing catalog cannot express the reading job cleanly.
+> **Acceptance test:** after the agent addresses a review, the reader can identify the changed regions, jump to them, and confirm that neighboring content stayed stable without inspecting source or generated HTML.
 
 
 
@@ -80,7 +88,7 @@ Add one type at a time. Do not build the entire candidate list speculatively.
 
 ### Review-relative change visibility {#change-visibility}
 
-Carry forward Proof’s strongest human-facing question: **what changed since this review opened?** Start with a compact summary of changed named blocks and semantic objects when a real multi-step review demonstrates uncertainty. Do not pre-commit to a general snapshot store, revision picker, or rollback UI; add those only if the summary proves useful but insufficient.
+Carry forward Proof’s strongest human-facing question: **what changed since this review opened?** The current review has now demonstrated that uncertainty, so the compact summary is the active slice above. Do not pre-commit to a general snapshot store, revision picker, or rollback UI; add those only if the summary proves useful but insufficient.
 
 ## Later: optional workflow capabilities {#later}
 

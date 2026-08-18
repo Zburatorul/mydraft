@@ -24,12 +24,22 @@ describe("CLI document mutation seam", () => {
   test("rejects unguarded block edits", async () => {
     const file = fixture();
     const comments = await myd(null, "comments", file);
-    expect(comments.stdout).toContain(`myd blocks ${JSON.stringify(file)} --json to get the version`);
+    expect(comments.stdout).toContain(`myd blocks ${JSON.stringify(file)} --json to get the version and positional guard`);
     const before = fs.readFileSync(file, "utf8");
     const result = await myd("Changed.", "set-block", file, "results");
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("requires --version");
     expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
+
+  test("comments include surrounding source context for imprecise selections", async () => {
+    const file = fixture();
+    fs.writeFileSync(file, "# Title\n\nA paragraph with a care{==fully chosen fra==}{>>This selection is intentionally sloppy.<<}{#c1}gment in context.\n\n---\ncomments:\n  c1: {by: user, status: open}\n");
+    const comments = await myd(null, "comments", file, "--json");
+    const item = JSON.parse(comments.stdout).items[0];
+
+    expect(item.anchorText).toBe("fully chosen fra");
+    expect(item.context).toBe("A paragraph with a carefully chosen fragment in context.");
   });
 
   test("stale block edits leave bytes unchanged and guarded edits succeed", async () => {
@@ -52,5 +62,55 @@ describe("CLI document mutation seam", () => {
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, id: "c1" });
     expect(fs.readFileSync(file, "utf8")).toContain("Current reply");
+  });
+
+  test("default comments hide replies belonging to resolved threads", async () => {
+    const file = fixture();
+    await myd(null, "reply", file, "c1", "Handled by the agent");
+    await myd(null, "resolve", file, "c1");
+
+    const pending = JSON.parse((await myd(null, "comments", file, "--json")).stdout);
+    const all = JSON.parse((await myd(null, "comments", file, "--all", "--json")).stdout);
+    expect(pending.items).toEqual([]);
+    expect(all.items.map((item: { id: string }) => item.id)).toEqual(["c1", "c2"]);
+  });
+
+  test("a positional block id cannot silently retarget after an earlier edit shifts blocks", async () => {
+    const file = fixture();
+    fs.writeFileSync(file, "# Title {#title}\n\nFirst target.\n\nSecond target.\n\nThird target.\n");
+    const initial = JSON.parse((await myd(null, "blocks", file, "--json")).stdout);
+    const firstTarget = initial.blocks.find((block: { id: string }) => block.id === "b1");
+    const thirdTarget = initial.blocks.find((block: { id: string }) => block.id === "b3");
+
+    const first = await myd("First replacement.\n\nInserted block.", "set-block", file, "b1", "--version", initial.version, "--expect", firstTarget.guard, "--json");
+    expect(first.exitCode).toBe(0);
+    const versionAfterFirstEdit = JSON.parse(first.stdout).version;
+
+    const shifted = await myd("Third replacement.", "set-block", file, "b3", "--version", versionAfterFirstEdit, "--expect", thirdTarget.guard, "--json");
+    expect(shifted.exitCode).not.toBe(0);
+    expect(shifted.stderr).toContain("re-list blocks");
+    expect(fs.readFileSync(file, "utf8")).toContain("Second target.");
+    expect(fs.readFileSync(file, "utf8")).toContain("Third target.");
+  });
+
+  test("a positional edit without its listing guard leaves the document unchanged", async () => {
+    const file = fixture();
+    const listing = JSON.parse((await myd(null, "blocks", file, "--json")).stdout);
+    const before = fs.readFileSync(file, "utf8");
+
+    const result = await myd("Unsafe replacement.", "set-block", file, "b1", "--version", listing.version);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("requires --expect");
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
+
+  test("block JSON provides the full source and its positional guard", async () => {
+    const file = fixture();
+    const result = await myd(null, "block", file, "b1", "--json");
+    const inspected = JSON.parse(result.stdout);
+
+    expect(inspected.source).toContain("A paragraph with");
+    expect(inspected.block.guard).toMatch(/^[a-f0-9]{12}$/);
+    expect(inspected.version).toMatch(/^[a-f0-9]{12}$/);
   });
 });
