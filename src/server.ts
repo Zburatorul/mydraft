@@ -121,6 +121,21 @@ function buildInbox(statuses: string[] | null): InboxRow[] {
     });
   return sortInbox(rows);
 }
+/** A review is addressed by an opaque id that may travel to another machine, so the record
+ *  the API hands back identifies its document by `title` — never by server-side path. */
+function publicReview(record: ReviewRecord) {
+  const { path: _serverPath, ...shareable } = record;
+  return shareable;
+}
+/** Reading for a caller who supplied only a review id: filesystem errors quote the absolute
+ *  path, so they are replaced rather than forwarded. A caller who passed a path keeps the
+ *  detailed error, because it cannot tell them anything they did not already know. */
+function readDocFor(pathParam: unknown, reviewId: unknown): Doc {
+  const resolved = requestedDocumentPath(pathParam, reviewId);
+  if (!(typeof reviewId === "string" && reviewId)) return readDoc(resolved);
+  try { return readDoc(resolved); }
+  catch { throw Object.assign(new Error("This review's document is no longer readable."), { status: 410 }); }
+}
 
 const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf", ".svg": "image/svg+xml", ".png": "image/png", ".json": "application/json", ".map": "application/json" };
 function serveFile(base: string, rel: string) {
@@ -165,7 +180,7 @@ export function startServer(port = 7474) {
 
         if (req.method === "POST" && (p === "/api/reviews" || p === "/api/track")) {
           const b = await req.json();
-          const doc = readDoc(requestedDocumentPath(b.path, b.reviewId));
+          const doc = readDocFor(b.path, b.reviewId);
           ensureWatch(doc.path);
           const status = reviewTracker.track(doc.path, doc.version, {
             title: typeof b.title === "string" ? b.title : undefined,
@@ -173,7 +188,7 @@ export function startServer(port = 7474) {
           });
           broadcast(doc.path, { type: "tracking-changed" });
           notifyInbox();
-          return json({ ...status, review: reviewTracker.get(status.reviewId), revision: revisionTracker.current(doc.path) }, p === "/api/reviews" ? 201 : 200);
+          return json({ ...status, review: publicReview(reviewTracker.get(status.reviewId)!), revision: revisionTracker.current(doc.path) }, p === "/api/reviews" ? 201 : 200);
         }
         if (req.method === "GET" && p === "/api/inbox") {
           const requested = url.searchParams.getAll("status").flatMap((v) => v.split(",")).map((v) => v.trim()).filter(Boolean);
@@ -186,12 +201,12 @@ export function startServer(port = 7474) {
           if (requestedStatus && !["active", "superseded", "completed", "archived"].includes(requestedStatus)) {
             return json({ error: `Unknown review status: ${requestedStatus}` }, 400);
           }
-          return json({ reviews: reviewTracker.list(requestedStatus as ReviewRecord["status"] | undefined) }, 200);
+          return json({ reviews: reviewTracker.list(requestedStatus as ReviewRecord["status"] | undefined).map(publicReview) }, 200);
         }
         const reviewApiRoute = /^\/api\/reviews\/([^/]+)$/.exec(p);
         if (req.method === "GET" && reviewApiRoute) {
           const review = requireReview(decodeURIComponent(reviewApiRoute[1]!));
-          return json({ review, revision: revisionTracker.current(review.path) }, 200);
+          return json({ review: publicReview(review), revision: revisionTracker.current(review.path) }, 200);
         }
         const archiveRoute = /^\/api\/reviews\/([^/]+)\/archive$/.exec(p);
         if (req.method === "POST" && archiveRoute) {
@@ -199,7 +214,7 @@ export function startServer(port = 7474) {
           if (!review) return json({ error: "Review not found." }, 404);
           broadcast(review.path, { type: "tracking-changed" });
           notifyInbox();
-          return json({ review }, 200);
+          return json({ review: publicReview(review) }, 200);
         }
         if (p === "/api/tracking") {
           const reviewId = url.searchParams.get("review");
@@ -209,14 +224,15 @@ export function startServer(port = 7474) {
         }
 
         if (p === "/api/doc") {
-          const doc = readDoc(requestedDocumentPath(url.searchParams.get("path"), url.searchParams.get("review")));
+          const doc = readDocFor(url.searchParams.get("path"), url.searchParams.get("review"));
           ensureWatch(doc.path);
           if (req.headers.get("accept")?.includes("text/markdown")) return new Response(doc.source, { headers: { "content-type": "text/markdown" } });
           const html = await renderDoc(doc);
-          return json({ path: doc.path, version: doc.version, revision: revisionTracker.current(doc.path), html, items: doc.items, cleanLength: doc.clean.length }, 200);
+          const byPath = !url.searchParams.get("review") && !!url.searchParams.get("path");
+          return json({ ...(byPath ? { path: doc.path } : {}), name: path.basename(doc.path), version: doc.version, revision: revisionTracker.current(doc.path), html, items: doc.items, cleanLength: doc.clean.length }, 200);
         }
         if (p === "/api/raw") {
-          const doc = readDoc(requestedDocumentPath(url.searchParams.get("path"), url.searchParams.get("review")));
+          const doc = readDocFor(url.searchParams.get("path"), url.searchParams.get("review"));
           // serve sibling assets (images) relative to the doc
           const rel = url.searchParams.get("rel") ?? "";
           return serveFile(path.dirname(doc.path), rel);
@@ -224,7 +240,7 @@ export function startServer(port = 7474) {
         if (req.method === "POST" && p === "/api/annotate") {
           const b = await req.json();
           requireMutationVersion(b.version);
-          const doc = readDoc(requestedDocumentPath(b.path, b.reviewId));
+          const doc = readDocFor(b.path, b.reviewId);
           let anchorMode: string | undefined;
           const written = writeDoc(doc, (current) => {
             requireTrackedReview(current, b.reviewId, b.version);
@@ -238,7 +254,7 @@ export function startServer(port = 7474) {
         if (req.method === "POST" && p === "/api/annotate-object") {
           const b = await req.json();
           requireMutationVersion(b.version);
-          const doc = readDoc(requestedDocumentPath(b.path, b.reviewId));
+          const doc = readDocFor(b.path, b.reviewId);
           const written = writeDoc(doc, (current) => {
             requireTrackedReview(current, b.reviewId, b.version);
             const blk = topBlocks(current).find((x) => x.id === b.bid || `b${x.index}` === b.bid);
@@ -249,7 +265,7 @@ export function startServer(port = 7474) {
         }
         if (req.method === "POST" && p === "/api/reply") {
           const b = await req.json();
-          const doc = readDoc(requestedDocumentPath(b.path, b.reviewId));
+          const doc = readDocFor(b.path, b.reviewId);
           const written = writeDoc(doc, (current) => {
             requireTrackedReview(current, b.reviewId, b.version);
             return reply(current, b.id, b.message, b.by ?? "user");
@@ -258,7 +274,7 @@ export function startServer(port = 7474) {
         }
         if (req.method === "POST" && p === "/api/resolve") {
           const b = await req.json();
-          const doc = readDoc(requestedDocumentPath(b.path, b.reviewId));
+          const doc = readDocFor(b.path, b.reviewId);
           const written = writeDoc(doc, (current) => {
             requireTrackedReview(current, b.reviewId, b.version);
             return resolve(current, b.id, b.by ?? "user", undefined, b.summary);
@@ -267,7 +283,7 @@ export function startServer(port = 7474) {
         }
         if (req.method === "POST" && p === "/api/done") {
           const b = await req.json();
-          let doc = readDoc(requestedDocumentPath(b.path, b.reviewId));
+          let doc = readDocFor(b.path, b.reviewId);
           requireTrackedReview(doc, b.reviewId, b.version);
           if (b.note && String(b.note).trim()) {
             const { appendRoughdraftDocumentComment } = await import("../vendor/rfm/index.js") as any;
