@@ -47,7 +47,7 @@ async function ensureServer(): Promise<{ port: number }> {
   die("could not start myd server"); return { port: 0 };
 }
 async function trackReview(port: number, file: string): Promise<{ reviewId: string }> {
-  const r = await fetch(`http://localhost:${port}/api/track`, {
+  const r = await fetch(`http://localhost:${port}/api/reviews`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ path: file }),
@@ -55,18 +55,27 @@ async function trackReview(port: number, file: string): Promise<{ reviewId: stri
   if (!r.ok) die(`could not start review: ${(await r.json().catch(() => ({})))?.error ?? r.statusText}`);
   return r.json() as Promise<{ reviewId: string }>;
 }
-function docUrl(port: number, file: string, reviewId?: string) {
-  const review = reviewId ? `&review=${encodeURIComponent(reviewId)}` : "";
-  return `http://localhost:${port}/?path=${encodeURIComponent(file)}${review}`;
+function docUrl(port: number, reviewId: string) {
+  return `http://localhost:${port}/review/${encodeURIComponent(reviewId)}`;
 }
 function openBrowser(url: string) { if (process.env.MYD_NO_OPEN) return; try { spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref(); } catch {} }
 
-async function waitDone(port: number, file: string, timeoutSec: number): Promise<any> {
+async function waitDone(port: number, file: string, timeoutSec: number, reviewId?: string): Promise<any> {
   return new Promise((res, rej) => {
-    const ws = new WebSocket(`ws://localhost:${port}/ws?path=${encodeURIComponent(file)}`);
+    const target = reviewId ? `review=${encodeURIComponent(reviewId)}` : `path=${encodeURIComponent(file)}`;
+    const ws = new WebSocket(`ws://localhost:${port}/ws?${target}`);
     const t = setTimeout(() => { clearInterval(ping); ws.close(); res({ timedOut: true, timeoutSec }); }, timeoutSec * 1000);
     const ping = setInterval(() => { try { ws.send("ping"); } catch {} }, 20000);
-    ws.onmessage = (e) => { if (e.data === "pong") return; const m = JSON.parse(String(e.data)); if (m.type === "done") { clearInterval(ping); clearTimeout(t); ws.close(); res(m); } };
+    ws.onmessage = (e) => {
+      if (e.data === "pong") return;
+      const m = JSON.parse(String(e.data));
+      if (m.type === "done" && (!reviewId || m.reviewId === reviewId)) {
+        clearInterval(ping);
+        clearTimeout(t);
+        ws.close();
+        res(m);
+      }
+    };
     ws.onerror = (e) => { clearInterval(ping); clearTimeout(t); rej(e); };
   });
 }
@@ -151,12 +160,12 @@ switch (cmd) {
   case "status": { const s = await serverAlive(); out(s ?? { running: false }, s ? `running on port ${s.port} (pid ${s.pid})` : "not running"); break; }
   case "stop": { const s = await serverAlive(); if (s) { try { process.kill(s.pid); } catch {} } out({ stopped: !!s }, s ? "stopped" : "not running"); break; }
   case "view": {
-    const file = abs(pos[0]); const { port } = await ensureServer(); const { reviewId } = await trackReview(port, file); const url = docUrl(port, file, reviewId);
+    const file = abs(pos[0]); const { port } = await ensureServer(); const { reviewId } = await trackReview(port, file); const url = docUrl(port, reviewId);
     if (!flags["no-open"]) openBrowser(url);
     if (!flags.wait) { out({ url, reviewId }, url); break; }
     const timeoutSec = waitTimeout();
     console.error(url); console.error(`Waiting for Done Reviewing… (timeout: ${timeoutSec}s)`);
-    const ev = await waitDone(port, file, timeoutSec);
+    const ev = await waitDone(port, file, timeoutSec, reviewId);
     out(ev, ev.timedOut ? "timed out" : `Review completed for ${file}${ev.note ? `\nNote: ${ev.note}` : ""}`);
     if (ev.timedOut) process.exit(1); break;
   }

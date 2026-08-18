@@ -13,6 +13,7 @@ describe("reviewPresentation", () => {
   test.each([
     ["completed", "review closed"],
     ["superseded", "outdated review"],
+    ["archived", "archived review"],
     ["unknown", "not tracked"],
   ])("labels %s reviews in the browser tab", (state, label) => {
     expect(reviewPresentation({ tracked: false, state }, "plan.md", 12)).toEqual({
