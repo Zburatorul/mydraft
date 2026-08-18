@@ -57,6 +57,22 @@ async function openReviewSocket(reviewId: string) {
   return socket;
 }
 
+// Runs the real CLI so the session it sends is covered, not just the tracker that consumes it.
+async function runView(doc: string, session: string) {
+  const env: Record<string, string> = { ...process.env as Record<string, string>, MYD_HOME: path.join(tempDir, "state"), MYD_NO_OPEN: "1", MYD_SESSION: session };
+  delete env.CLAUDE_CODE_SESSION_ID;
+  const cli = Bun.spawn([process.execPath, path.join(ROOT, "src/cli.ts"), "view", doc, "--json", "--no-open"], { cwd: ROOT, env, stdout: "pipe", stderr: "pipe" });
+  const output = await new Response(cli.stdout).text();
+  expect(await cli.exited).toBe(0);
+  return JSON.parse(output) as { url: string; reviewId: string };
+}
+
+// Omits `version` on purpose: this asks for the record's lifecycle state, not staleness.
+async function trackedState(reviewId: string): Promise<string> {
+  const response = await fetch(`${baseUrl}/api/tracking?review=${encodeURIComponent(reviewId)}`);
+  return (await response.json() as { state: string }).state;
+}
+
 beforeAll(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "myd-review-api-"));
   fixture = path.join(tempDir, "plan.md");
@@ -147,5 +163,54 @@ describe("durable review registry API", () => {
     const archivedResponse = await postJson(`/api/reviews/${encodeURIComponent(second.reviewId)}/archive`, {});
     expect(archivedResponse.status).toBe(200);
     expect((await archivedResponse.json() as { review: { status: string } }).review.status).toBe("archived");
+  }, TEST_TIMEOUT_MS);
+
+  // Regression: `myd view` must send a session, or an earlier tab of the same caller stays
+  // live and can complete a review nobody is waiting on while the agent blocks to timeout.
+  test("re-viewing a document from one agent session retires that session's earlier review", async () => {
+    if (!server) await startServer();
+    const doc = path.join(tempDir, "session-scoped.md");
+    fs.writeFileSync(doc, "# Session scoped\n\nBody.\n");
+
+    const first = await runView(doc, "agent-A");
+    const second = await runView(doc, "agent-A");
+    expect(second.reviewId).not.toBe(first.reviewId);
+
+    expect(await trackedState(first.reviewId)).toBe("superseded");
+    expect(await trackedState(second.reviewId)).toBe("active");
+
+    const version = (await (await fetch(`${baseUrl}/api/doc?review=${encodeURIComponent(second.reviewId)}`)).json() as { version: string }).version;
+    const staleDone = await postJson("/api/done", { reviewId: first.reviewId, version });
+    expect(staleDone.status).toBe(409);
+  }, TEST_TIMEOUT_MS);
+
+  test("reviews from different agent sessions coexist", async () => {
+    if (!server) await startServer();
+    const doc = path.join(tempDir, "two-agents.md");
+    fs.writeFileSync(doc, "# Two agents\n\nBody.\n");
+
+    const b = await runView(doc, "agent-B");
+    const c = await runView(doc, "agent-C");
+
+    expect(await trackedState(b.reviewId)).toBe("active");
+    expect(await trackedState(c.reviewId)).toBe("active");
+  }, TEST_TIMEOUT_MS);
+
+  test("done events can be filtered to a single review of a shared document", async () => {
+    if (!server) await startServer();
+    const doc = path.join(tempDir, "done-filter.md");
+    fs.writeFileSync(doc, "# Done filter\n\nBody.\n");
+
+    const mine = await runView(doc, "agent-D");
+    const theirs = await runView(doc, "agent-E");
+    const version = (await (await fetch(`${baseUrl}/api/doc?review=${encodeURIComponent(theirs.reviewId)}`)).json() as { version: string }).version;
+    expect((await postJson("/api/done", { reviewId: theirs.reviewId, version })).status).toBe(200);
+
+    const forMine = await (await fetch(`${baseUrl}/api/done-events?review=${encodeURIComponent(mine.reviewId)}`)).json() as unknown[];
+    expect(forMine).toEqual([]);
+    const forTheirs = await (await fetch(`${baseUrl}/api/done-events?review=${encodeURIComponent(theirs.reviewId)}`)).json() as Array<{ reviewId: string }>;
+    expect(forTheirs).toEqual([expect.objectContaining({ reviewId: theirs.reviewId })]);
+    const byPath = await (await fetch(`${baseUrl}/api/done-events?path=${encodeURIComponent(doc)}`)).json() as unknown[];
+    expect(byPath.length).toBe(1);
   }, TEST_TIMEOUT_MS);
 });

@@ -46,11 +46,25 @@ async function ensureServer(): Promise<{ port: number }> {
   for (let i = 0; i < 40; i++) { await Bun.sleep(100); const a = await serverAlive(); if (a) return a; }
   die("could not start myd server"); return { port: 0 };
 }
+// One agent session that re-opens the same document is continuing its own review, not
+// competing with itself: passing a session lets the backend retire the tab it replaces,
+// so the reviewer cannot finish in a stale tab whose completion nobody is waiting on.
+// Independent agents keep distinct sessions, so their reviews still coexist (issue #3).
+function reviewSession(): string | undefined {
+  const explicit = typeof flags.session === "string" ? flags.session.trim() : "";
+  if (explicit) return explicit;
+  for (const key of ["MYD_SESSION", "CLAUDE_CODE_SESSION_ID"]) {
+    const value = process.env[key]?.trim();
+    if (value) return `${key}:${value}`;
+  }
+  return undefined;
+}
 async function trackReview(port: number, file: string): Promise<{ reviewId: string }> {
+  const session = reviewSession();
   const r = await fetch(`http://localhost:${port}/api/reviews`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ path: file }),
+    body: JSON.stringify({ path: file, ...(session ? { context: { session } } : {}) }),
   });
   if (!r.ok) die(`could not start review: ${(await r.json().catch(() => ({})))?.error ?? r.statusText}`);
   return r.json() as Promise<{ reviewId: string }>;
@@ -60,23 +74,45 @@ function docUrl(port: number, reviewId: string) {
 }
 function openBrowser(url: string) { if (process.env.MYD_NO_OPEN) return; try { spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref(); } catch {} }
 
+async function reviewLifecycle(port: number, reviewId: string): Promise<string | null> {
+  // No `version` here: we want the record's lifecycle state, not a staleness verdict.
+  try {
+    const r = await fetch(`http://localhost:${port}/api/tracking?review=${encodeURIComponent(reviewId)}`, { signal: AbortSignal.timeout(2000) });
+    return r.ok ? ((await r.json()) as { state: string }).state : null;
+  } catch { return null; }
+}
+async function doneEvent(port: number, reviewId: string): Promise<any | null> {
+  try {
+    const r = await fetch(`http://localhost:${port}/api/done-events?review=${encodeURIComponent(reviewId)}`, { signal: AbortSignal.timeout(2000) });
+    if (!r.ok) return null;
+    const events = (await r.json()) as any[];
+    return events.at(-1) ?? null;
+  } catch { return null; }
+}
+// Subscribes by path so a Done landing on a *different* review of this document is still
+// observed, and polls our own record so a review that can no longer be completed ends the
+// wait with a reason instead of burning the full timeout in silence.
 async function waitDone(port: number, file: string, timeoutSec: number, reviewId?: string): Promise<any> {
   return new Promise((res, rej) => {
-    const target = reviewId ? `review=${encodeURIComponent(reviewId)}` : `path=${encodeURIComponent(file)}`;
-    const ws = new WebSocket(`ws://localhost:${port}/ws?${target}`);
-    const t = setTimeout(() => { clearInterval(ping); ws.close(); res({ timedOut: true, timeoutSec }); }, timeoutSec * 1000);
+    const ws = new WebSocket(`ws://localhost:${port}/ws?path=${encodeURIComponent(file)}`);
+    const settle = (value: unknown) => { clearInterval(ping); clearInterval(lifecycle); clearTimeout(t); ws.close(); res(value); };
+    const t = setTimeout(() => settle({ timedOut: true, timeoutSec }), timeoutSec * 1000);
     const ping = setInterval(() => { try { ws.send("ping"); } catch {} }, 20000);
+    const lifecycle = setInterval(async () => {
+      if (!reviewId) return;
+      const state = await reviewLifecycle(port, reviewId);
+      if (!state || state === "active") return;
+      if (state === "completed") { const ev = await doneEvent(port, reviewId); if (ev) return settle({ type: "done", ...ev }); return; }
+      settle({ stopped: state, reviewId });
+    }, 5000);
     ws.onmessage = (e) => {
       if (e.data === "pong") return;
       const m = JSON.parse(String(e.data));
-      if (m.type === "done" && (!reviewId || m.reviewId === reviewId)) {
-        clearInterval(ping);
-        clearTimeout(t);
-        ws.close();
-        res(m);
-      }
+      if (m.type !== "done") return;
+      if (!reviewId || m.reviewId === reviewId) return settle(m);
+      console.error(`Note: a different review of this document (${m.reviewId}) was completed; still waiting on ${reviewId}.`);
     };
-    ws.onerror = (e) => { clearInterval(ping); clearTimeout(t); rej(e); };
+    ws.onerror = (e) => { clearInterval(ping); clearInterval(lifecycle); clearTimeout(t); rej(e); };
   });
 }
 
@@ -87,7 +123,7 @@ function blocksOf(file: string) {
 
 const HELP = `myd — Markdown viewer + annotations + agent CLI
 
-  myd view <file.md> [--wait] [--timeout S] [--no-open]   open and return; --wait is explicit synchronous mode
+  myd view <file.md> [--wait] [--timeout S] [--no-open] [--session ID]   open and return; --wait is explicit synchronous mode
   myd wait <file.md> [--timeout S]          explicit synchronous wait for Done (maximum default: 1800 seconds)
   myd comments <file.md> [--all]            pending review items (comments/suggestions/replies) as JSON
   myd reply <file.md> <id> <message>        append a reply (by AI)
@@ -107,7 +143,7 @@ const HELP = `myd — Markdown viewer + annotations + agent CLI
   myd install-prompt [--claude|--codex|--file F] [--remove]   idempotently (re)install the myd block into agent instruction files (default: both)
   myd serve                                 run the server in the foreground
   myd status | stop
-Flags: --json for machine output.`;
+Flags: --json for machine output. --session (else MYD_SESSION/CLAUDE_CODE_SESSION_ID) scopes a review to one caller, so re-viewing a document retires only that caller's earlier tab.`;
 
 switch (cmd) {
   case undefined: case "help": case "--help": console.log(HELP); break;
@@ -166,8 +202,10 @@ switch (cmd) {
     const timeoutSec = waitTimeout();
     console.error(url); console.error(`Waiting for Done Reviewing… (timeout: ${timeoutSec}s)`);
     const ev = await waitDone(port, file, timeoutSec, reviewId);
-    out(ev, ev.timedOut ? "timed out" : `Review completed for ${file}${ev.note ? `\nNote: ${ev.note}` : ""}`);
-    if (ev.timedOut) process.exit(1); break;
+    out(ev, ev.timedOut ? "timed out"
+      : ev.stopped ? `This review is ${ev.stopped}; nobody can complete it. Open a fresh review with myd view.`
+      : `Review completed for ${file}${ev.note ? `\nNote: ${ev.note}` : ""}`);
+    if (ev.timedOut || ev.stopped) process.exit(1); break;
   }
   case "wait": { const file = abs(pos[0]); const { port } = await ensureServer(); const ev = await waitDone(port, file, waitTimeout()); out(ev, ev.timedOut ? "timed out" : `Review completed for ${file}${ev.note ? `\nNote: ${ev.note}` : ""}`); if (ev.timedOut) process.exit(1); break; }
   case "comments": {

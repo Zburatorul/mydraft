@@ -131,7 +131,9 @@ export function startServer(port = 7474) {
         if (p.startsWith("/web/")) return serveFile(WEB, p.slice(5));
         if (p.startsWith("/vendor/")) return serveFile(NM, p.slice(8));
         if (p === "/api/health") return json({ ok: true, pid: process.pid, port }, 200);
-        if (p === "/api/done-events") { const dp = url.searchParams.get("path"); const f = path.join(STATE_DIR, "done.log"); const evs = fs.existsSync(f) ? fs.readFileSync(f, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []; return json(evs.filter((e) => !dp || e.path === path.resolve(dp)), 200); }
+        // Reviews of one document now coexist, so a path filter alone cannot tell an agent
+        // whether the Done it is catching up on belongs to its own review; `review` can.
+        if (p === "/api/done-events") { const rid = url.searchParams.get("review"); const dp = url.searchParams.get("path"); const f = path.join(STATE_DIR, "done.log"); const evs = fs.existsSync(f) ? fs.readFileSync(f, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []; return json(evs.filter((e) => (!rid || e.reviewId === rid) && (!dp || e.path === path.resolve(dp))), 200); }
 
         if (req.method === "POST" && (p === "/api/reviews" || p === "/api/track")) {
           const b = await req.json();
