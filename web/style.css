@@ -199,3 +199,38 @@ html[data-review-state="deprecated"] .thread { border-color: color-mix(in srgb, 
 html[data-review-state="deprecated"] #doc { background: color-mix(in srgb, var(--panel) 94%, #9f8968); filter: saturate(.72); }
 html[data-review-state="deprecated"] #rail { opacity: .78; }
 html[data-review-state="deprecated"] #reviewState { display: inline-block; }
+
+/* ---------- review inbox ---------- */
+/* The controls are the only route to completed and archived work, so the title yields
+   to them on a narrow screen rather than squeezing them out of reach. */
+#bar.inbox-bar > label.toggle, #bar.inbox-bar > .theme-toggle { flex-shrink: 0; }
+#bar.inbox-bar > #title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The viewer hides this toggle under 640px because there it is a convenience; in the inbox
+   it is the only way to reach completed and archived work, so it survives every width. */
+@media (max-width: 640px) { #bar.inbox-bar > label.toggle { display: flex; } }
+#inboxMain { max-width: 900px; margin: 0 auto; padding: 24px 16px 64px; }
+.inbox { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.inbox-row { display: flex; gap: 12px; align-items: center; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+.inbox-row[data-status="completed"], .inbox-row[data-status="superseded"], .inbox-row[data-status="archived"] { opacity: .72; }
+.inbox-main { flex: 1; min-width: 0; }
+.inbox-line { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.inbox-title { font-weight: 600; overflow-wrap: anywhere; }
+.inbox-meta { color: var(--muted); font-size: 12px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.inbox-pending { font-size: 12px; color: var(--accent); }
+.inbox-badge { border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 600; letter-spacing: .02em; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.inbox-badge[data-tone="active"] { color: #1d6b3f; background: #e4f3ea; border-color: #bcdfc9; }
+.inbox-badge[data-tone="warn"] { color: #8a4b2a; background: #f6e6dc; border-color: #e0c3ae; }
+:root[data-theme="dark"] .inbox-badge[data-tone="active"] { color: #8fe0ad; background: #16281d; border-color: #2c4634; }
+:root[data-theme="dark"] .inbox-badge[data-tone="warn"] { color: #f0b48c; background: #2c1d14; border-color: #4a3122; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .inbox-badge[data-tone="active"] { color: #8fe0ad; background: #16281d; border-color: #2c4634; }
+  :root:not([data-theme="light"]) .inbox-badge[data-tone="warn"] { color: #f0b48c; background: #2c1d14; border-color: #4a3122; }
+}
+.inbox-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+.inbox-open { font-size: 13px; padding: 5px 12px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent); color: #fff; text-decoration: none; }
+.inbox-open:hover { filter: brightness(1.05); }
+.inbox-empty { color: var(--muted); text-align: center; padding: 48px 16px; }
+@media (max-width: 600px) {
+  .inbox-row { flex-direction: column; align-items: stretch; }
+  .inbox-actions { justify-content: flex-end; }
+}

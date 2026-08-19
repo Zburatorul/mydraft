@@ -5,6 +5,7 @@ import os from "node:os";
 import { loadDoc, annotateObject, reply, resolve, type Doc } from "./doc.ts";
 import { renderDoc, topBlocks } from "./render.ts";
 import { ReviewTracker, type ReviewRecord, type ReviewSnapshot } from "./review-tracker.ts";
+import { inboxRow, isDefaultVisible, sortInbox, type InboxRow } from "./review-inbox.ts";
 import { RevisionTracker, type RevisionSnapshot } from "./revision-tracker.ts";
 import { applySelectionAnnotation } from "./selection-annotation.ts";
 import { mutateDocument } from "./document-mutation.ts";
@@ -17,8 +18,9 @@ export const STATE_FILE = path.join(STATE_DIR, "server.json");
 export const REVISION_FILE = path.join(STATE_DIR, "revisions.json");
 export const REVIEW_FILE = path.join(STATE_DIR, "reviews.json");
 
-type Client = { path: string; reviewId: string | null };
+type Client = { path: string; reviewId: string | null; inbox?: boolean };
 const topics = new Map<string, Set<any>>(); // abs path → sockets
+const inboxSockets = new Set<any>(); // the inbox spans every document, so it cannot live in `topics`
 const watchers = new Map<string, fs.FSWatcher>();
 const doneLog: Array<{ path: string; at: string; note?: string }> = [];
 const reviewTracker = new ReviewTracker({ initial: loadSnapshot<ReviewSnapshot>(REVIEW_FILE), persist: (snapshot) => saveSnapshot(REVIEW_FILE, snapshot) });
@@ -59,6 +61,9 @@ function broadcastReview(p: string, reviewId: string, msg: unknown) {
     try { ws.send(JSON.stringify(msg)); } catch {}
   }
 }
+function notifyInbox() {
+  for (const ws of inboxSockets) { try { ws.send(JSON.stringify({ type: "reviews-changed" })); } catch {} }
+}
 function ensureWatch(abs: string) {
   if (watchers.has(abs)) return;
   let t: Timer | null = null;
@@ -75,6 +80,7 @@ function ensureWatch(abs: string) {
         const doc = readDoc(abs);
         reviewTracker.advance(abs, doc.version);
         broadcast(abs, { type: "changed", version: doc.version, revision: revisionTracker.current(abs) });
+        notifyInbox();
       } catch {
         broadcast(abs, { type: "changed" });
       }
@@ -102,6 +108,20 @@ function requestedDocumentPath(documentPath: unknown, reviewId: unknown): string
   throw Object.assign(new Error("A document path or review ID is required."), { status: 400 });
 }
 
+/** Reading a document can fail (moved, deleted, unreadable); that costs one row its counts,
+ *  never the whole inbox, so the reviewer still sees the review and that it went stale. */
+function buildInbox(statuses: string[] | null): InboxRow[] {
+  const rows = reviewTracker.list()
+    .filter((record) => statuses ? statuses.includes(record.status) : isDefaultVisible(record.status))
+    .map((record) => {
+      try {
+        const doc = loadDoc(record.path, fs.readFileSync(record.path, "utf8"));
+        return inboxRow(record, { revision: revisionTracker.current(record.path)?.number ?? null, items: doc.items });
+      } catch { return inboxRow(record, null); }
+    });
+  return sortInbox(rows);
+}
+
 const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf", ".svg": "image/svg+xml", ".png": "image/png", ".json": "application/json", ".map": "application/json" };
 function serveFile(base: string, rel: string) {
   const abs = path.normalize(path.join(base, rel));
@@ -117,12 +137,20 @@ export function startServer(port = 7474) {
       const p = url.pathname;
       try {
         if (p === "/ws") {
+          // The inbox watches every review at once, so it subscribes without a document.
+          if (url.searchParams.get("inbox")) {
+            if (srv.upgrade(req, { data: { path: "", reviewId: null, inbox: true } })) return undefined as any;
+            return new Response("upgrade failed", { status: 400 });
+          }
           const reviewId = url.searchParams.get("review");
           const docPath = path.resolve(requestedDocumentPath(url.searchParams.get("path"), reviewId));
           if (srv.upgrade(req, { data: { path: docPath, reviewId } })) return undefined as any;
           return new Response("upgrade failed", { status: 400 });
         }
-        if (p === "/" || p === "/index.html") return serveFile(WEB, "index.html");
+        // A bare root is the inbox; `/?path=…` and `/?review=…` stay the viewer for saved links.
+        if (p === "/") return serveFile(WEB, url.searchParams.get("path") || url.searchParams.get("review") ? "index.html" : "inbox.html");
+        if (p === "/index.html") return serveFile(WEB, "index.html");
+        if (p === "/inbox" || p === "/inbox.html") return serveFile(WEB, "inbox.html");
         const reviewRoute = /^\/review\/([^/]+)$/.exec(p);
         if (reviewRoute) {
           requireReview(decodeURIComponent(reviewRoute[1]!));
@@ -144,7 +172,14 @@ export function startServer(port = 7474) {
             context: b.context && typeof b.context === "object" ? b.context : undefined,
           });
           broadcast(doc.path, { type: "tracking-changed" });
+          notifyInbox();
           return json({ ...status, review: reviewTracker.get(status.reviewId), revision: revisionTracker.current(doc.path) }, p === "/api/reviews" ? 201 : 200);
+        }
+        if (req.method === "GET" && p === "/api/inbox") {
+          const requested = url.searchParams.getAll("status").flatMap((v) => v.split(",")).map((v) => v.trim()).filter(Boolean);
+          const unknown = requested.filter((v) => !["active", "superseded", "completed", "archived"].includes(v));
+          if (unknown.length) return json({ error: `Unknown review status: ${unknown.join(", ")}` }, 400);
+          return json({ rows: buildInbox(requested.length ? requested : null) }, 200);
         }
         if (req.method === "GET" && p === "/api/reviews") {
           const requestedStatus = url.searchParams.get("status");
@@ -163,6 +198,7 @@ export function startServer(port = 7474) {
           const review = reviewTracker.archive(decodeURIComponent(archiveRoute[1]!));
           if (!review) return json({ error: "Review not found." }, 404);
           broadcast(review.path, { type: "tracking-changed" });
+          notifyInbox();
           return json({ review }, 200);
         }
         if (p === "/api/tracking") {
@@ -242,6 +278,7 @@ export function startServer(port = 7474) {
           doneLog.push(ev);
           fs.appendFileSync(path.join(STATE_DIR, "done.log"), JSON.stringify(ev) + "\n");
           broadcastReview(doc.path, ev.reviewId, { type: "done", ...ev });
+          notifyInbox();
           return json({ ok: true, tracking }, 200);
         }
         return new Response("not found", { status: 404 });
@@ -250,8 +287,8 @@ export function startServer(port = 7474) {
       }
     },
     websocket: {
-      open(ws) { const set = topics.get(ws.data.path) ?? new Set(); set.add(ws); topics.set(ws.data.path, set); if (fs.existsSync(ws.data.path)) ensureWatch(ws.data.path); },
-      close(ws) { topics.get(ws.data.path)?.delete(ws); },
+      open(ws) { if (ws.data.inbox) { inboxSockets.add(ws); return; } const set = topics.get(ws.data.path) ?? new Set(); set.add(ws); topics.set(ws.data.path, set); if (fs.existsSync(ws.data.path)) ensureWatch(ws.data.path); },
+      close(ws) { if (ws.data.inbox) { inboxSockets.delete(ws); return; } topics.get(ws.data.path)?.delete(ws); },
       message(ws, msg) { if (String(msg) === "ping") ws.send("pong"); },
     },
   });

@@ -10,7 +10,7 @@
   "scripts": {
     "myd": "bun src/cli.ts",
     "test": "bun test",
-    "test:e2e": "bun test ./src/selection-annotation.e2e.ts --timeout 15000",
+    "test:e2e": "bun test ./src/selection-annotation.e2e.ts ./src/review-inbox.e2e.ts --timeout 30000",
     "typecheck": "npx tsc --noEmit"
   },
   "dependencies": {

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review inbox · myd</title>
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+<header id="bar" class="inbox-bar">
+  <span id="title">Review inbox</span>
+  <span id="status" role="status" aria-live="polite"></span>
+  <span class="spacer"></span>
+  <label class="toggle"><input type="checkbox" id="showAll"> show all</label>
+  <button id="themeBtn" class="theme-toggle" type="button" aria-label="Switch to dark mode" title="Switch to dark mode">
+    <span class="theme-toggle-icon" data-theme-icon="moon" aria-hidden="true"></span>
+    <span data-theme-label>Dark mode</span>
+  </button>
+</header>
+<main id="inboxMain">
+  <ul id="inbox" class="inbox"></ul>
+  <p id="empty" class="inbox-empty" hidden></p>
+</main>
+<script type="module" src="/web/inbox.js"></script>
+</body>
+</html>
