@@ -1,4 +1,5 @@
 import path from "node:path";
+import { shortReviewId } from "./review-id.ts";
 
 export type ReviewState = "active" | "superseded" | "completed" | "archived" | "unknown";
 
@@ -52,7 +53,7 @@ export class ReviewTracker {
   constructor(options: ReviewTrackerOptions | (() => string) = {}) {
     const resolved = typeof options === "function" ? { createId: options } : options;
     this.persist = resolved.persist ?? (() => {});
-    this.createId = resolved.createId ?? (() => crypto.randomUUID());
+    this.createId = resolved.createId ?? shortReviewId;
     this.now = resolved.now ?? (() => new Date().toISOString());
     for (const [id, record] of Object.entries(resolved.initial ?? {})) {
       if (record?.id === id && Number.isInteger(record.number) && record.number > 0 && record.path && record.currentVersion && ["active", "superseded", "completed", "archived"].includes(record.status)) {
@@ -62,8 +63,16 @@ export class ReviewTracker {
     }
   }
 
+  /** A short id can repeat. Draw again if it does — but only a few times, so an
+   *  injected generator that deliberately returns one id keeps its behaviour. */
+  private freshId(): string {
+    let id = this.createId();
+    for (let attempt = 0; attempt < 8 && this.records.has(id); attempt++) id = this.createId();
+    return id;
+  }
+
   track(documentPath: string, version: string, metadata: { title?: string; context?: ReviewContext } = {}): ReviewStatus & { reviewId: string } {
-    const reviewId = this.createId();
+    const reviewId = this.freshId();
     const now = this.now();
     const session = metadata.context?.session?.trim();
     if (session) {

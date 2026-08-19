@@ -1,3 +1,5 @@
+import { pathParam } from "./url-path.ts";
+
 // The two local viewer URLs myd hands to a browser. They are separate because the
 // viewer accepts two different identifiers, and picking the wrong one 404s.
 
@@ -14,5 +16,5 @@ export function reviewViewerUrl(port: number, reviewId: string): string {
  * open tab for it.
  */
 export function pathViewerUrl(port: number, file: string): string {
-  return `http://localhost:${port}/?path=${encodeURIComponent(file)}`;
+  return `http://localhost:${port}/?path=${pathParam(file)}`;
 }

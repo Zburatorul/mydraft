@@ -10,6 +10,7 @@ import { topBlocks } from "./render.ts";
 import { getSemanticObject, listSemanticObjects, replaceSemanticObject } from "./semantic-objects.ts";
 import { InvalidPublicOrigin, normalizePublicOrigin, reviewUrl } from "./public-url.ts";
 import { pathViewerUrl, reviewViewerUrl } from "./viewer-url.ts";
+import { pathParam } from "./url-path.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const argv = process.argv.slice(2);
@@ -106,7 +107,7 @@ async function doneEvent(port: number, reviewId: string): Promise<any | null> {
 // wait with a reason instead of burning the full timeout in silence.
 async function waitDone(port: number, file: string, timeoutSec: number, reviewId?: string): Promise<any> {
   return new Promise((res, rej) => {
-    const ws = new WebSocket(`ws://localhost:${port}/ws?path=${encodeURIComponent(file)}`);
+    const ws = new WebSocket(`ws://localhost:${port}/ws?path=${pathParam(file)}`);
     const settle = (value: unknown) => { clearInterval(ping); clearInterval(lifecycle); clearTimeout(t); ws.close(); res(value); };
     const t = setTimeout(() => settle({ timedOut: true, timeoutSec }), timeoutSec * 1000);
     const ping = setInterval(() => { try { ws.send("ping"); } catch {} }, 20000);
