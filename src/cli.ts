@@ -160,8 +160,9 @@ const HELP = `myd — Markdown viewer + annotations + agent CLI
 Flags: --json for machine output.
 
 Remote review: set MYD_PUBLIC_URL=https://review.example.test (or myd serve --public-url …) and point an
-authenticated HTTPS proxy or tunnel at the local server. myd view then prints that origin's /review/<id>
-URL and launches no desktop browser. --session (else MYD_SESSION/CLAUDE_CODE_SESSION_ID) scopes a review to one caller, so re-viewing a document retires only that caller's earlier tab.`;
+HTTPS proxy or tunnel at the local server. myd view then prints that origin's /review/<id>
+URL and launches no desktop browser. Anyone who can reach that origin can open, annotate and complete
+every review on the server — the inbox lists them all — so restrict the proxy accordingly. --session (else MYD_SESSION/CLAUDE_CODE_SESSION_ID) scopes a review to one caller, so re-viewing a document retires only that caller's earlier tab.`;
 
 switch (cmd) {
   case undefined: case "help": case "--help": console.log(HELP); break;

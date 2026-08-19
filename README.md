@@ -32,9 +32,11 @@ myd view plans/roadmap.md --wait
 # https://review.example.test/review/6f1b…
 ```
 
-The review is still created and tracked over localhost; only the printed origin changes, and no desktop browser is launched. Put an authenticated HTTPS reverse proxy or tunnel in front of the port — the viewer already speaks root-relative HTTP and derives `wss://` from the page, so nothing needs host rewriting. That is also why a public URL carrying a path prefix is rejected rather than printed: the viewer loads `/web` and `/api` from the origin root.
+The review is still created and tracked over localhost; only the printed origin changes, and no desktop browser is launched. Put an HTTPS reverse proxy or tunnel in front of the port — the viewer already speaks root-relative HTTP and derives `wss://` from the page, so nothing needs host rewriting. That is also why a public URL carrying a path prefix is rejected rather than printed: the viewer loads `/web` and `/api` from the origin root. Prefer `https://`: an `http://` origin is accepted for a LAN or a test, but the document text and every annotation then travel in cleartext.
 
-Remote review is a property of the deployment, so `myd serve --public-url` records the origin and later `myd view` calls in other shells pick it up. `MYD_PUBLIC_URL` in the calling process wins; setting it empty takes one call back to local. The URL carries only the opaque review id — the same `/review/<id>` route the local viewer uses — and the reviewer can also find the document in the Review Inbox.
+Remote review is a property of the deployment, so `myd serve --public-url` records the origin and later `myd view` calls in other shells pick it up. `MYD_PUBLIC_URL` in the calling process wins; setting it empty takes one call back to local. The URL carries only the opaque review id — the same `/review/<id>` route the local viewer uses.
+
+> **Anyone who can reach the origin can reach every review on that server.** The root route is the Review Inbox: it lists every review with its id, and any id opens, annotates, or completes that review. The opaque id keeps the *file path* off the wire — it does not scope access to one document, and sharing one review link is closer to handing out an account than a single-document link. So restrict the proxy to people you trust with every document under review on that machine; authenticating them is not the same as scoping them. When a review needs a narrower audience, give it its own instance with `MYD_HOME` and `MYD_PORT`.
 
 Env: `MYD_PORT`, `MYD_HOME` (state dir) run an isolated instance; `MYD_PUBLIC_URL` enables remote review; `MYD_NO_OPEN=1` suppresses the browser — the eval runner uses all three (`:7575`, `~/tmp/myd-eval/.myd-home`).
 
