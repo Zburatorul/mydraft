@@ -1,3 +1,5 @@
+import { pathParam } from "./url-path.ts";
+
 // The two local viewer URLs myd hands to a browser. They are separate because the
 // viewer accepts two different identifiers, and picking the wrong one 404s.
 
@@ -7,12 +9,18 @@ export function reviewViewerUrl(port: number, reviewId: string): string {
 }
 
 /**
- * The legacy path route, for rendering a document that is not under review.
+ * The handle route, for rendering a document that is not under review.
  *
  * `myd shot` uses this rather than registering a review: a screenshot is not a review,
  * and creating one would list the document in the inbox and supersede the caller's own
- * open tab for it.
+ * open tab for it. A handle also keeps the URL free of the escapes a real filename
+ * drags in — spaces, unicode, `#` — which a `?path=` URL cannot avoid.
  */
+export function handleViewerUrl(port: number, handle: string): string {
+  return `http://localhost:${port}/?doc=${encodeURIComponent(handle)}`;
+}
+
+/** The legacy path route, still served for links saved before handles existed. */
 export function pathViewerUrl(port: number, file: string): string {
-  return `http://localhost:${port}/?path=${encodeURIComponent(file)}`;
+  return `http://localhost:${port}/?path=${pathParam(file)}`;
 }

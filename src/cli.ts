@@ -9,7 +9,8 @@ import { DocumentVersionConflict, mutateDocument } from "./document-mutation.ts"
 import { topBlocks } from "./render.ts";
 import { getSemanticObject, listSemanticObjects, replaceSemanticObject } from "./semantic-objects.ts";
 import { InvalidPublicOrigin, normalizePublicOrigin, reviewUrl } from "./public-url.ts";
-import { pathViewerUrl, reviewViewerUrl } from "./viewer-url.ts";
+import { handleViewerUrl, reviewViewerUrl } from "./viewer-url.ts";
+import { pathParam } from "./url-path.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const argv = process.argv.slice(2);
@@ -106,7 +107,7 @@ async function doneEvent(port: number, reviewId: string): Promise<any | null> {
 // wait with a reason instead of burning the full timeout in silence.
 async function waitDone(port: number, file: string, timeoutSec: number, reviewId?: string): Promise<any> {
   return new Promise((res, rej) => {
-    const ws = new WebSocket(`ws://localhost:${port}/ws?path=${encodeURIComponent(file)}`);
+    const ws = new WebSocket(`ws://localhost:${port}/ws?path=${pathParam(file)}`);
     const settle = (value: unknown) => { clearInterval(ping); clearInterval(lifecycle); clearTimeout(t); ws.close(); res(value); };
     const t = setTimeout(() => settle({ timedOut: true, timeoutSec }), timeoutSec * 1000);
     const ping = setInterval(() => { try { ws.send("ping"); } catch {} }, 20000);
@@ -322,7 +323,13 @@ switch (cmd) {
     break;
   }
   case "shot": {
-    const file = abs(pos[0]); const { port } = await ensureServer(); const url = pathViewerUrl(port, file);
+    const file = abs(pos[0]); const { port } = await ensureServer();
+    // A handle rather than the path: whatever the file is called, the URL stays plain.
+    const handleResponse = await fetch(`http://localhost:${port}/api/handles`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: file }),
+    });
+    if (!handleResponse.ok) die(`could not prepare ${file} for rendering`);
+    const url = handleViewerUrl(port, ((await handleResponse.json()) as { handle: string }).handle);
     const outPng = pos[1] ? path.resolve(pos[1]) : file.replace(/\.md$/, "") + ".png";
     const width = Number(flags.width ?? 1200), height = Number(flags.height ?? 1600);
     const chrome = ["google-chrome", "chromium", "chromium-browser"].find((c) => { try { execFileSync("which", [c], { stdio: "ignore" }); return true; } catch { return false; } });

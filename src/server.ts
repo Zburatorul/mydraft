@@ -10,6 +10,7 @@ import { RevisionTracker, type RevisionSnapshot } from "./revision-tracker.ts";
 import { applySelectionAnnotation } from "./selection-annotation.ts";
 import { mutateDocument } from "./document-mutation.ts";
 import { normalizePublicOrigin } from "./public-url.ts";
+import { DocumentHandles } from "./document-handles.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const WEB = path.join(ROOT, "web");
@@ -24,6 +25,7 @@ const topics = new Map<string, Set<any>>(); // abs path → sockets
 const inboxSockets = new Set<any>(); // the inbox spans every document, so it cannot live in `topics`
 const watchers = new Map<string, fs.FSWatcher>();
 const doneLog: Array<{ path: string; at: string; note?: string }> = [];
+const documentHandles = new DocumentHandles();
 const reviewTracker = new ReviewTracker({ initial: loadSnapshot<ReviewSnapshot>(REVIEW_FILE), persist: (snapshot) => saveSnapshot(REVIEW_FILE, snapshot) });
 const revisionTracker = new RevisionTracker(loadSnapshot<RevisionSnapshot>(REVISION_FILE), (snapshot) => saveSnapshot(REVISION_FILE, snapshot));
 
@@ -155,6 +157,19 @@ export function startServer(port = 7474, options: { publicUrl?: string | null } 
       const url = new URL(req.url);
       const p = url.pathname;
       try {
+        // A `doc` handle stands in for a path so the URL carries no filesystem text.
+        // Resolving it here means every route that already reads `path` keeps working.
+        const handle = url.searchParams.get("doc");
+        if (handle) {
+          const handled = documentHandles.pathFor(handle);
+          if (!handled) return json({ error: "Unknown document handle; render it again." }, 404);
+          url.searchParams.set("path", handled);
+        }
+        if (req.method === "POST" && p === "/api/handles") {
+          const body = await req.json();
+          if (typeof body.path !== "string" || !body.path.trim()) return json({ error: "A document path is required." }, 400);
+          return json({ handle: documentHandles.for(path.resolve(body.path)) }, 200);
+        }
         if (p === "/ws") {
           // The inbox watches every review at once, so it subscribes without a document.
           if (url.searchParams.get("inbox")) {

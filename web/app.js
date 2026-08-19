@@ -10,13 +10,16 @@ const qs = new URLSearchParams(location.search);
 const routeReview = /^\/review\/([^/]+)\/?$/.exec(location.pathname);
 const reviewId = routeReview ? decodeURIComponent(routeReview[1]) : qs.get("review");
 let docPath = qs.get("path");
+// A `doc` handle names the document without spelling out its path — how `myd shot`
+// opens a file whose name would otherwise fill the URL with escapes.
+const docHandle = qs.get("doc");
 const $ = (s) => document.querySelector(s);
 const docEl = $("#doc"), railEl = $("#threads"), railPanel = $("#rail"), mainEl = $("main"), railToggle = $("#railToggle"), statusEl = $("#status");
 let state = { version: null, items: [], html: "" };
 let reviewStatus = null;
 let ws;
 
-if (!docPath && !reviewId) { docEl.innerHTML = "<p>Open with <code>myd view /abs/file.md</code></p>"; throw new Error("no review or path"); }
+if (!docPath && !reviewId && !docHandle) { docEl.innerHTML = "<p>Open with <code>myd view /abs/file.md</code></p>"; throw new Error("no review, handle or path"); }
 let fileName = docPath?.split("/").pop() ?? "review";
 function setDocumentTitle(title) {
   fileName = title || docPath?.split("/").pop() || "review";
@@ -39,7 +42,9 @@ async function resolveReviewRoute() {
 }
 
 function documentQuery() {
-  return reviewId ? `review=${encodeURIComponent(reviewId)}` : `path=${encodeURIComponent(docPath)}`;
+  if (reviewId) return `review=${encodeURIComponent(reviewId)}`;
+  if (docHandle) return `doc=${encodeURIComponent(docHandle)}`;
+  return `path=${encodeURIComponent(docPath)}`;
 }
 /** How a mutation names its document: the review id when we have one, else the path a
  *  legacy `?path=` tab was opened with. Sending both would leak the path back needlessly. */
@@ -99,6 +104,8 @@ async function load() {
   if (seq !== loadSeq) return; // a newer load superseded this one
   const y = window.scrollY;
   state = data;
+  // A handle tab holds no path and no review, so the document names itself here.
+  if (docHandle && data.name) setDocumentTitle(data.name);
   docEl.innerHTML = data.html;
   fixRelativeImages();
   await hydrateRich(seq);

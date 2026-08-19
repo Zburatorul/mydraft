@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathViewerUrl, reviewViewerUrl } from "./viewer-url.ts";
+import { handleViewerUrl, pathViewerUrl, reviewViewerUrl } from "./viewer-url.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const TEST_TIMEOUT_MS = 30_000;
@@ -79,7 +79,7 @@ describe("myd shot", () => {
   // The regression was in the call site, not the builder, so this drives the real command
   // and records the URL it hands the browser. A shim stands in for Chrome, which keeps the
   // case fast and lets it run where no Chrome is installed.
-  test("hands the browser the path URL, not the review route", async () => {
+  test("hands the browser a handle URL that carries no filename at all", async () => {
     const shotRoot = fs.mkdtempSync(path.join(os.tmpdir(), "myd-shot-"));
     const binDir = path.join(shotRoot, "bin");
     const argvLog = path.join(shotRoot, "argv.log");
@@ -89,7 +89,9 @@ describe("myd shot", () => {
     fs.writeFileSync(shim, `#!/bin/sh\nfor a in "$@"; do echo "$a" >> ${JSON.stringify(argvLog)}; done\nfor a in "$@"; do case "$a" in --screenshot=*) : > "\${a#--screenshot=}";; esac; done\n`);
     fs.chmodSync(shim, 0o755);
 
-    const doc = path.join(shotRoot, "shot.md");
+    // A filename that would otherwise drag escapes into the URL.
+    fs.mkdirSync(path.join(shotRoot, "My Plans"));
+    const doc = path.join(shotRoot, "My Plans", "q3 roadmap.md");
     fs.writeFileSync(doc, "# Shot\n\nA paragraph.\n");
     const env = { ...process.env, PATH: `${binDir}:${process.env.PATH}`, MYD_HOME: path.join(shotRoot, "state"), MYD_PORT: "0" };
     try {
@@ -103,8 +105,11 @@ describe("myd shot", () => {
     const passed = fs.readFileSync(argvLog, "utf8").trim().split("\n");
     const url = passed.find((a) => a.startsWith("http://"));
     expect(url).toBeDefined();
-    expect(url).toContain("/?path=");
-    // The exact regression: a file path where a review id belongs.
+    // A handle, so nothing about the filename reaches the URL — not the path, not an escape.
+    expect(url).toMatch(/^http:\/\/localhost:\d+\/\?doc=[0-9a-z]{6}$/);
+    expect(url).not.toContain(shotRoot);
+    expect(url).not.toContain("%");
+    // The regression this case was written for: a file path where a review id belongs.
     expect(url).not.toContain("/review/");
     expect(JSON.parse(stdout).png).toBe(doc.replace(/\.md$/, "") + ".png");
 
@@ -120,7 +125,9 @@ describe("myd shot", () => {
 describe("the two viewer URLs", () => {
   test("address the document differently and escape what they carry", () => {
     expect(reviewViewerUrl(7474, "6f1b-42")).toBe("http://localhost:7474/review/6f1b-42");
-    expect(pathViewerUrl(7474, "/docs/a b.md")).toBe("http://localhost:7474/?path=%2Fdocs%2Fa%20b.md");
+    expect(handleViewerUrl(7474, "x7k2m9")).toBe("http://localhost:7474/?doc=x7k2m9");
+    // Separators stay literal so the URL reads as a path; see url-path.test.ts.
+    expect(pathViewerUrl(7474, "/docs/a b.md")).toBe("http://localhost:7474/?path=/docs/a b.md");
     expect(reviewViewerUrl(7474, "a/b")).toBe("http://localhost:7474/review/a%2Fb");
   });
 });
