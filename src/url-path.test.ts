@@ -3,6 +3,17 @@ import { pathParam } from "./url-path.ts";
 import { pathViewerUrl } from "./viewer-url.ts";
 
 describe("a path in a URL query", () => {
+  test("keeps spaces and separators instead of becoming %20/%2F noise", () => {
+    expect(pathParam("/home/eugeniu/My Plans/q3 roadmap.md")).toBe("/home/eugeniu/My Plans/q3 roadmap.md");
+    expect(pathViewerUrl(7474, "/home/eugeniu/My Plans/q3 roadmap.md"))
+      .toBe("http://localhost:7474/?path=/home/eugeniu/My Plans/q3 roadmap.md");
+  });
+
+  test("cannot substitute a character, because this value is opened on disk", () => {
+    // A dash would read better and point at a different file; ENOENT is not convenience.
+    expect(pathParam("/tmp/My Plans/q3 roadmap.md")).not.toContain("-");
+  });
+
   test("keeps its separators instead of becoming %2F noise", () => {
     expect(pathParam("/home/eugeniu/plans/roadmap.md")).toBe("/home/eugeniu/plans/roadmap.md");
     expect(pathViewerUrl(7474, "/home/eugeniu/plans/roadmap.md"))

@@ -121,7 +121,7 @@ describe("the two viewer URLs", () => {
   test("address the document differently and escape what they carry", () => {
     expect(reviewViewerUrl(7474, "6f1b-42")).toBe("http://localhost:7474/review/6f1b-42");
     // Separators stay literal so the URL reads as a path; see url-path.test.ts.
-    expect(pathViewerUrl(7474, "/docs/a b.md")).toBe("http://localhost:7474/?path=/docs/a%20b.md");
+    expect(pathViewerUrl(7474, "/docs/a b.md")).toBe("http://localhost:7474/?path=/docs/a b.md");
     expect(reviewViewerUrl(7474, "a/b")).toBe("http://localhost:7474/review/a%2Fb");
   });
 });

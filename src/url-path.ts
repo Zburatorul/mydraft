@@ -1,11 +1,14 @@
 /**
- * Encode a filesystem path for a URL query without escaping its separators.
+ * Encode a filesystem path for a URL query, keeping it readable.
  *
- * `/` is legal in a query string, and percent-escaping it turns a readable path
- * into %2F noise for no gain. Everything that would actually break parsing —
- * `?`, `#`, `&`, `%` — is still encoded, as is a space, because a URL a person
- * cannot copy out of a terminal in one piece is not more convenient.
+ * `/` and a space are both legal in a query string, and escaping them turns a
+ * path into %2F/%20 noise for no gain — the client percent-encodes the space on
+ * the wire anyway, so the only thing the escape changes is what a person reads.
+ * Everything that would actually break parsing — `?`, `#`, `&`, `%` — is encoded.
+ *
+ * Substituting a character (a dash, say) is not an option: this value is the path
+ * the server opens, so `My-Plans` would be a different directory than `My Plans`.
  */
 export function pathParam(value: string): string {
-  return encodeURIComponent(value).replace(/%2F/g, "/");
+  return encodeURIComponent(value).replace(/%2F/g, "/").replace(/%20/g, " ");
 }
