@@ -132,7 +132,10 @@ describe("durable review registry API", () => {
     expect(direct.status).toBe(200);
     const documentResponse = await fetch(`${baseUrl}/api/doc?review=${encodeURIComponent(first.reviewId)}`);
     expect(documentResponse.status).toBe(200);
-    expect((await documentResponse.json() as { path: string }).path).toBe(fixture);
+    // Addressed by review id, so the document is named but not located.
+    const document = await documentResponse.json() as { path?: string; name: string };
+    expect(document.path).toBeUndefined();
+    expect(document.name).toBe(path.basename(fixture));
 
     const firstSocket = await openReviewSocket(first.reviewId);
     const secondSocket = await openReviewSocket(second.reviewId);

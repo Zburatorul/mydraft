@@ -32,14 +32,19 @@ async function resolveReviewRoute() {
     statusEl.textContent = response.status === 404 ? "review not found" : "review load failed";
     return false;
   }
-  const { review } = await response.json();
-  docPath = review.path;
-  setDocumentTitle(review.title);
+  // Deliberately no path: a review reached by id identifies its document by title, and the
+  // server resolves the file itself. This tab may be running on someone else's machine.
+  setDocumentTitle((await response.json()).review.title);
   return true;
 }
 
 function documentQuery() {
   return reviewId ? `review=${encodeURIComponent(reviewId)}` : `path=${encodeURIComponent(docPath)}`;
+}
+/** How a mutation names its document: the review id when we have one, else the path a
+ *  legacy `?path=` tab was opened with. Sending both would leak the path back needlessly. */
+function documentRef() {
+  return reviewId ? { reviewId } : { path: docPath };
 }
 
 const railMediaQuery = matchMedia("(max-width: 1200px)");
@@ -323,7 +328,7 @@ async function saveEditor() {
   const body = $("#edBody").value, repl = $("#edRepl").value;
   if (edTarget?.kind === "object") {
     if (!body.trim()) return;
-    const r = await fetch("/api/annotate-object", { method: "POST", body: JSON.stringify({ path: docPath, reviewId, version: state.version, bid: edTarget.blockEl.dataset.bid, target: edTarget.target, quote: edTarget.quote, body, by: "user" }) });
+    const r = await fetch("/api/annotate-object", { method: "POST", body: JSON.stringify({ ...documentRef(), version: state.version, bid: edTarget.blockEl.dataset.bid, target: edTarget.target, quote: edTarget.quote, body, by: "user" }) });
     const disposition = await annotationSaveDisposition(r, "Failed to save comment");
     if (disposition.reload) await load();
     if (disposition.error) showEditorError(disposition.error);
@@ -333,7 +338,7 @@ async function saveEditor() {
   if (!pending) return;
   const isSug = edMode === "suggest";
   if (!isSug && !body.trim()) return;
-  const payload = { path: docPath, reviewId, version: state.version, ...pending, kind: isSug ? "suggestion" : "comment", body, replacement: repl, note: body, by: "user" };
+  const payload = { ...documentRef(), version: state.version, ...pending, kind: isSug ? "suggestion" : "comment", body, replacement: repl, note: body, by: "user" };
   const r = await fetch("/api/annotate", { method: "POST", body: JSON.stringify(payload) });
   const disposition = await annotationSaveDisposition(r);
   if (disposition.reload) await load();
@@ -386,8 +391,8 @@ function renderRail() {
     </div>`;
   }).join("") || "<p class='muted'>Select text to comment or suggest. Click 💬 on a diagram or a diagram node to comment on it.</p>";
   railEl.querySelectorAll(".thread").forEach((t) => t.addEventListener("click", (e) => { if (e.target.closest("form,button")) return; scrollToItem(t.dataset.id); }));
-  railEl.querySelectorAll("[data-resolve]").forEach((b) => b.onclick = async () => { await fetch("/api/resolve", { method: "POST", body: JSON.stringify({ path: docPath, reviewId, version: state.version, id: b.dataset.resolve, by: "user" }) }); });
-  railEl.querySelectorAll(".replyForm").forEach((f) => f.onsubmit = async (e) => { e.preventDefault(); const input = f.querySelector("input"); const m = input.value.trim(); if (!m) return; const response = await fetch("/api/reply", { method: "POST", body: JSON.stringify({ path: docPath, reviewId, version: state.version, id: f.dataset.id, message: m, by: "user" }) }); const currentForm = [...railEl.querySelectorAll(".replyForm")].find((form) => form.dataset.id === f.dataset.id); const currentInput = currentForm?.querySelector("input"); if (response.ok && currentInput?.value.trim() === m) currentInput.value = ""; });
+  railEl.querySelectorAll("[data-resolve]").forEach((b) => b.onclick = async () => { await fetch("/api/resolve", { method: "POST", body: JSON.stringify({ ...documentRef(), version: state.version, id: b.dataset.resolve, by: "user" }) }); });
+  railEl.querySelectorAll(".replyForm").forEach((f) => f.onsubmit = async (e) => { e.preventDefault(); const input = f.querySelector("input"); const m = input.value.trim(); if (!m) return; const response = await fetch("/api/reply", { method: "POST", body: JSON.stringify({ ...documentRef(), version: state.version, id: f.dataset.id, message: m, by: "user" }) }); const currentForm = [...railEl.querySelectorAll(".replyForm")].find((form) => form.dataset.id === f.dataset.id); const currentInput = currentForm?.querySelector("input"); if (response.ok && currentInput?.value.trim() === m) currentInput.value = ""; });
   updateWriteControls();
   for (const form of railEl.querySelectorAll(".replyForm")) {
     const saved = replyState.get(form.dataset.id); if (!saved) continue;
@@ -418,7 +423,7 @@ $("#doneDlg").addEventListener("keydown", (event) => {
 });
 $("#doneDlg").addEventListener("close", async () => {
   if ($("#doneDlg").returnValue !== "ok") return;
-  const r = await fetch("/api/done", { method: "POST", body: JSON.stringify({ path: docPath, reviewId, version: state.version, note: $("#doneNote").value, by: "user" }) });
+  const r = await fetch("/api/done", { method: "POST", body: JSON.stringify({ ...documentRef(), version: state.version, note: $("#doneNote").value, by: "user" }) });
   if (!r.ok) { await checkTracking(); return; }
   const data = await r.json();
   $("#doneNote").value = ""; statusEl.textContent = "sent ✓";
