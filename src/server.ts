@@ -9,6 +9,7 @@ import { inboxRow, isDefaultVisible, sortInbox, type InboxRow } from "./review-i
 import { RevisionTracker, type RevisionSnapshot } from "./revision-tracker.ts";
 import { applySelectionAnnotation } from "./selection-annotation.ts";
 import { mutateDocument } from "./document-mutation.ts";
+import { normalizePublicOrigin } from "./public-url.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const WEB = path.join(ROOT, "web");
@@ -144,7 +145,10 @@ function serveFile(base: string, rel: string) {
   return new Response(Bun.file(abs), { headers: { "content-type": MIME[path.extname(abs)] ?? "application/octet-stream" } });
 }
 
-export function startServer(port = 7474) {
+export function startServer(port = 7474, options: { publicUrl?: string | null } = {}) {
+  // Remote review is a property of the deployment, not of a single command: whoever
+  // starts the server records the origin, and every later `myd view` reads it back.
+  const publicOrigin = normalizePublicOrigin(options.publicUrl ?? process.env.MYD_PUBLIC_URL ?? null);
   const server = Bun.serve<Client>({
     port,
     async fetch(req, srv) {
@@ -309,12 +313,13 @@ export function startServer(port = 7474) {
     },
   });
   fs.mkdirSync(STATE_DIR, { recursive: true });
-  fs.writeFileSync(STATE_FILE, JSON.stringify({ port: server.port, pid: process.pid, startedAt: new Date().toISOString() }));
-  return server;
+  fs.writeFileSync(STATE_FILE, JSON.stringify({ port: server.port, pid: process.pid, startedAt: new Date().toISOString(), ...(publicOrigin ? { publicUrl: publicOrigin } : {}) }));
+  return Object.assign(server, { publicOrigin });
 }
 
 if (import.meta.main) {
   const port = Number(process.env.MYD_PORT ?? 7474);
   const s = startServer(port);
   console.log(`myd server on http://localhost:${s.port}`);
+  if (s.publicOrigin) console.log(`public review origin ${s.publicOrigin}`);
 }
