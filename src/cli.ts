@@ -9,7 +9,7 @@ import { DocumentVersionConflict, mutateDocument } from "./document-mutation.ts"
 import { topBlocks } from "./render.ts";
 import { getSemanticObject, listSemanticObjects, replaceSemanticObject } from "./semantic-objects.ts";
 import { InvalidPublicOrigin, normalizePublicOrigin, reviewUrl } from "./public-url.ts";
-import { pathViewerUrl, reviewViewerUrl } from "./viewer-url.ts";
+import { handleViewerUrl, reviewViewerUrl } from "./viewer-url.ts";
 import { pathParam } from "./url-path.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
@@ -323,7 +323,13 @@ switch (cmd) {
     break;
   }
   case "shot": {
-    const file = abs(pos[0]); const { port } = await ensureServer(); const url = pathViewerUrl(port, file);
+    const file = abs(pos[0]); const { port } = await ensureServer();
+    // A handle rather than the path: whatever the file is called, the URL stays plain.
+    const handleResponse = await fetch(`http://localhost:${port}/api/handles`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: file }),
+    });
+    if (!handleResponse.ok) die(`could not prepare ${file} for rendering`);
+    const url = handleViewerUrl(port, ((await handleResponse.json()) as { handle: string }).handle);
     const outPng = pos[1] ? path.resolve(pos[1]) : file.replace(/\.md$/, "") + ".png";
     const width = Number(flags.width ?? 1200), height = Number(flags.height ?? 1600);
     const chrome = ["google-chrome", "chromium", "chromium-browser"].find((c) => { try { execFileSync("which", [c], { stdio: "ignore" }); return true; } catch { return false; } });
