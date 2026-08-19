@@ -32,8 +32,14 @@ jobs:
       - name: Unit tests
         run: bun test
 
-      - name: Install Playwright Chromium
-        run: bunx playwright install --with-deps chromium
-
+      # No browser to install: the runner image ships Google Chrome, and the e2e
+      # suites already prefer a system browser over a managed one (the Bun.which
+      # fallback in src/*.e2e.ts). Installing playwright's chromium fetched a
+      # second browser nothing launched, and --with-deps put the job at the mercy
+      # of apt — 207s on a good run, and 867s on the one that hit the job timeout.
+      # Printing the version fails loudly if an image ever drops Chrome, and
+      # records which build ran when a browser update breaks something.
       - name: Browser regression tests
-        run: bun run test:e2e
+        run: |
+          google-chrome --version
+          bun run test:e2e
