@@ -1,7 +1,11 @@
 name: CI
 
 on:
+  # Only mainline pushes: a branch with a PR is already covered by the pull_request
+  # run, and triggering both put them in one concurrency group where the later
+  # cancelled the earlier — which GitHub then showed as a failing check.
   push:
+    branches: [main]
   pull_request:
 
 permissions:
