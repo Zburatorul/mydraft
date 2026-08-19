@@ -9,6 +9,7 @@ import { DocumentVersionConflict, mutateDocument } from "./document-mutation.ts"
 import { topBlocks } from "./render.ts";
 import { getSemanticObject, listSemanticObjects, replaceSemanticObject } from "./semantic-objects.ts";
 import { InvalidPublicOrigin, normalizePublicOrigin, reviewUrl } from "./public-url.ts";
+import { pathViewerUrl, reviewViewerUrl } from "./viewer-url.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const argv = process.argv.slice(2);
@@ -82,9 +83,6 @@ async function trackReview(port: number, file: string): Promise<{ reviewId: stri
   });
   if (!r.ok) die(`could not start review: ${(await r.json().catch(() => ({})))?.error ?? r.statusText}`);
   return r.json() as Promise<{ reviewId: string }>;
-}
-function docUrl(port: number, reviewId: string) {
-  return `http://localhost:${port}/review/${encodeURIComponent(reviewId)}`;
 }
 function openBrowser(url: string) { if (process.env.MYD_NO_OPEN) return; try { spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref(); } catch {} }
 
@@ -228,7 +226,7 @@ switch (cmd) {
     const { reviewId } = await trackReview(port, file);
     // Remote mode prints a URL for another machine and never touches a desktop browser:
     // the box running the server is usually not the box doing the reviewing.
-    const url = origin ? reviewUrl(origin, reviewId) : docUrl(port, reviewId);
+    const url = origin ? reviewUrl(origin, reviewId) : reviewViewerUrl(port, reviewId);
     if (!origin && !flags["no-open"]) openBrowser(url);
     const remoteHint = origin ? "\nSend this link to the reviewer; it is also waiting in their Review Inbox." : "";
     if (!flags.wait) { out({ url, reviewId, remote: !!origin, ...(origin ? { publicUrl: origin } : {}) }, url + remoteHint); break; }
@@ -323,7 +321,7 @@ switch (cmd) {
     break;
   }
   case "shot": {
-    const file = abs(pos[0]); const { port } = await ensureServer(); const url = docUrl(port, file);
+    const file = abs(pos[0]); const { port } = await ensureServer(); const url = pathViewerUrl(port, file);
     const outPng = pos[1] ? path.resolve(pos[1]) : file.replace(/\.md$/, "") + ".png";
     const width = Number(flags.width ?? 1200), height = Number(flags.height ?? 1600);
     const chrome = ["google-chrome", "chromium", "chromium-browser"].find((c) => { try { execFileSync("which", [c], { stdio: "ignore" }); return true; } catch { return false; } });
