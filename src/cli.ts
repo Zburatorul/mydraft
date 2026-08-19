@@ -8,6 +8,7 @@ import { loadDoc, reply as replyDoc, resolve as resolveDoc } from "./doc.ts";
 import { DocumentVersionConflict, mutateDocument } from "./document-mutation.ts";
 import { topBlocks } from "./render.ts";
 import { getSemanticObject, listSemanticObjects, replaceSemanticObject } from "./semantic-objects.ts";
+import { InvalidPublicOrigin, normalizePublicOrigin, reviewUrl } from "./public-url.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const argv = process.argv.slice(2);
@@ -35,12 +36,25 @@ const waitTimeout = () => {
   return seconds;
 };
 
-async function serverAlive(): Promise<{ port: number; pid: number } | null> {
+/**
+ * The origin a reviewer on another device uses, or null for local-only mode.
+ * MYD_PUBLIC_URL in this process wins; otherwise whatever the running server recorded,
+ * so a remote deployment stays remote for every shell that talks to it.
+ */
+function publicOriginOf(state: { publicUrl?: string } | null): string | null {
+  try { return normalizePublicOrigin(process.env.MYD_PUBLIC_URL ?? state?.publicUrl ?? null); }
+  catch (error) { return die(error instanceof InvalidPublicOrigin ? error.message : String(error)); }
+}
+
+async function serverAlive(): Promise<{ port: number; pid: number; publicUrl?: string } | null> {
   try { const s = JSON.parse(fs.readFileSync(STATE_FILE, "utf8")); const r = await fetch(`http://localhost:${s.port}/api/health`, { signal: AbortSignal.timeout(800) }); if (r.ok) return s; } catch {}
   return null;
 }
-async function ensureServer(): Promise<{ port: number }> {
+async function ensureServer(): Promise<{ port: number; publicUrl?: string }> {
   const s = await serverAlive(); if (s) return s;
+  // Check this process's MYD_PUBLIC_URL before spawning: the server refuses to boot on a
+  // bad value, and "could not start myd server" would not say which value was wrong.
+  publicOriginOf(null);
   const child = spawn(process.execPath, [path.join(ROOT, "src/server.ts")], { detached: true, stdio: "ignore", env: { ...process.env } });
   child.unref();
   for (let i = 0; i < 40; i++) { await Bun.sleep(100); const a = await serverAlive(); if (a) return a; }
@@ -141,9 +155,13 @@ const HELP = `myd — Markdown viewer + annotations + agent CLI
   myd diff <old.md> <new.md> [out.md]       CriticMarkup diff between two versions
   myd guide [topic]                         agent guide; topics: workflow blocks objects explainers rich criticmarkup export api
   myd install-prompt [--claude|--codex|--file F] [--remove]   idempotently (re)install the myd block into agent instruction files (default: both)
-  myd serve                                 run the server in the foreground
+  myd serve [--public-url URL]              run the server in the foreground; --public-url (or MYD_PUBLIC_URL) enables remote review
   myd status | stop
-Flags: --json for machine output. --session (else MYD_SESSION/CLAUDE_CODE_SESSION_ID) scopes a review to one caller, so re-viewing a document retires only that caller's earlier tab.`;
+Flags: --json for machine output.
+
+Remote review: set MYD_PUBLIC_URL=https://review.example.test (or myd serve --public-url …) and point an
+authenticated HTTPS proxy or tunnel at the local server. myd view then prints that origin's /review/<id>
+URL and launches no desktop browser. --session (else MYD_SESSION/CLAUDE_CODE_SESSION_ID) scopes a review to one caller, so re-viewing a document retires only that caller's earlier tab.`;
 
 switch (cmd) {
   case undefined: case "help": case "--help": console.log(HELP); break;
@@ -192,15 +210,30 @@ switch (cmd) {
     if (!m) die(`no topic ${pos[0]}; topics: workflow blocks objects explainers rich criticmarkup export api`);
     console.log(m![0].trim()); break;
   }
-  case "serve": { const { startServer } = await import("./server.ts"); const s = startServer(Number(process.env.MYD_PORT ?? 7474)); console.log(`myd server on http://localhost:${s.port}`); break; }
-  case "status": { const s = await serverAlive(); out(s ?? { running: false }, s ? `running on port ${s.port} (pid ${s.pid})` : "not running"); break; }
+  case "serve": {
+    const { startServer } = await import("./server.ts");
+    if (flags["public-url"] === true) die("--public-url requires a URL, e.g. --public-url https://review.example.test");
+    let s;
+    try { s = startServer(Number(process.env.MYD_PORT ?? 7474), { publicUrl: flags["public-url"] === undefined ? null : String(flags["public-url"]) }); }
+    catch (error) { die(error instanceof InvalidPublicOrigin ? error.message : String(error)); break; }
+    console.log(`myd server on http://localhost:${s!.port}`);
+    if (s!.publicOrigin) console.log(`public review origin ${s!.publicOrigin}`);
+    break;
+  }
+  case "status": { const s = await serverAlive(); const origin = s ? publicOriginOf(s) : null; out(s ?? { running: false }, s ? `running on port ${s.port} (pid ${s.pid})${origin ? `\npublic review origin ${origin}` : ""}` : "not running"); break; }
   case "stop": { const s = await serverAlive(); if (s) { try { process.kill(s.pid); } catch {} } out({ stopped: !!s }, s ? "stopped" : "not running"); break; }
   case "view": {
-    const file = abs(pos[0]); const { port } = await ensureServer(); const { reviewId } = await trackReview(port, file); const url = docUrl(port, reviewId);
-    if (!flags["no-open"]) openBrowser(url);
-    if (!flags.wait) { out({ url, reviewId }, url); break; }
+    const file = abs(pos[0]); const server = await ensureServer(); const { port } = server;
+    const origin = publicOriginOf(server);
+    const { reviewId } = await trackReview(port, file);
+    // Remote mode prints a URL for another machine and never touches a desktop browser:
+    // the box running the server is usually not the box doing the reviewing.
+    const url = origin ? reviewUrl(origin, reviewId) : docUrl(port, reviewId);
+    if (!origin && !flags["no-open"]) openBrowser(url);
+    const remoteHint = origin ? "\nSend this link to the reviewer; it is also waiting in their Review Inbox." : "";
+    if (!flags.wait) { out({ url, reviewId, remote: !!origin, ...(origin ? { publicUrl: origin } : {}) }, url + remoteHint); break; }
     const timeoutSec = waitTimeout();
-    console.error(url); console.error(`Waiting for Done Reviewing… (timeout: ${timeoutSec}s)`);
+    console.error(url); if (remoteHint) console.error(remoteHint.trim()); console.error(`Waiting for Done Reviewing… (timeout: ${timeoutSec}s)`);
     const ev = await waitDone(port, file, timeoutSec, reviewId);
     out(ev, ev.timedOut ? "timed out"
       : ev.stopped ? `This review is ${ev.stopped}; nobody can complete it. Open a fresh review with myd view.`
