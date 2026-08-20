@@ -85,7 +85,33 @@ async function trackReview(port: number, file: string): Promise<{ reviewId: stri
   if (!r.ok) die(`could not start review: ${(await r.json().catch(() => ({})))?.error ?? r.statusText}`);
   return r.json() as Promise<{ reviewId: string }>;
 }
-function openBrowser(url: string) { if (process.env.MYD_NO_OPEN) return; try { spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref(); } catch {} }
+/**
+ * Best-effort desktop launch, reported rather than enforced. By the time this runs the review
+ * exists and its URL already works, so a missing or broken launcher — headless boxes, containers,
+ * a stripped PATH — must not turn a created review into a failed command (issue #17).
+ *
+ * `spawn` reports failure asynchronously via an `error` event, so the old synchronous try/catch
+ * never saw ENOENT: the unhandled event crashed the CLI *after* it had printed a working URL.
+ * Exactly one of `spawn`/`error` fires, both within a few milliseconds, and `unref` is deferred
+ * until then so the verdict is delivered before the process can exit.
+ */
+type BrowserLaunch = { opened: boolean; error?: string };
+const LAUNCH_VERDICT_MS = 2000;
+function openBrowser(url: string): Promise<BrowserLaunch> {
+  if (process.env.MYD_NO_OPEN) return Promise.resolve({ opened: false });
+  const reason = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  let child: ReturnType<typeof spawn>;
+  try { child = spawn("xdg-open", [url], { detached: true, stdio: "ignore" }); }
+  catch (error) { return Promise.resolve({ opened: false, error: reason(error) }); }
+  return new Promise((res) => {
+    const settle = (verdict: BrowserLaunch) => { clearTimeout(timer); child.unref(); res(verdict); };
+    // Backstop only: no launcher may hold up `myd view`. Silence is not evidence of failure,
+    // so an unreported launch counts as opened and raises no warning.
+    const timer = setTimeout(() => settle({ opened: true }), LAUNCH_VERDICT_MS);
+    child.on("spawn", () => settle({ opened: true }));
+    child.on("error", (error) => settle({ opened: false, error: reason(error) }));
+  });
+}
 
 async function reviewLifecycle(port: number, reviewId: string): Promise<string | null> {
   // No `version` here: we want the record's lifecycle state, not a staleness verdict.
@@ -137,6 +163,7 @@ function blocksOf(file: string) {
 const HELP = `myd — Markdown viewer + annotations + agent CLI
 
   myd view <file.md> [--wait] [--timeout S] [--no-open] [--session ID]   open and return; --wait is explicit synchronous mode
+      opening a desktop browser is best-effort: a headless box still creates the review, prints the URL and exits 0 (--json: browserOpened/browserError)
   myd wait <file.md> [--timeout S]          explicit synchronous wait for Done (maximum default: 1800 seconds)
   myd comments <file.md> [--all]            pending review items (comments/suggestions/replies) as JSON
   myd reply <file.md> <id> <message>        append a reply (by AI)
@@ -229,9 +256,12 @@ switch (cmd) {
     // Remote mode prints a URL for another machine and never touches a desktop browser:
     // the box running the server is usually not the box doing the reviewing.
     const url = origin ? reviewUrl(origin, reviewId) : reviewViewerUrl(port, reviewId);
-    if (!origin && !flags["no-open"]) openBrowser(url);
+    const launch = origin || flags["no-open"] ? { opened: false } as BrowserLaunch : await openBrowser(url);
+    if (launch.error) console.error(`Warning: could not open a browser (${launch.error}). The review was created and its URL still works.`);
     const remoteHint = origin ? "\nSend this link to the reviewer; it is also waiting in their Review Inbox." : "";
-    if (!flags.wait) { out({ url, reviewId, remote: !!origin, ...(origin ? { publicUrl: origin } : {}) }, url + remoteHint); break; }
+    // browserOpened/browserError keep "the review exists" separate from "a browser appeared",
+    // so automation can tell a real failure from a headless host that merely could not launch one.
+    if (!flags.wait) { out({ url, reviewId, remote: !!origin, browserOpened: launch.opened, ...(launch.error ? { browserError: launch.error } : {}), ...(origin ? { publicUrl: origin } : {}) }, url + remoteHint); break; }
     const timeoutSec = waitTimeout();
     console.error(url); if (remoteHint) console.error(remoteHint.trim()); console.error(`Waiting for Done Reviewing… (timeout: ${timeoutSec}s)`);
     const ev = await waitDone(port, file, timeoutSec, reviewId);
