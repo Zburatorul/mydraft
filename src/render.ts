@@ -84,10 +84,8 @@ function rehypeCallouts() {
   };
 }
 
-let processor: ReturnType<typeof unified> | null = null;
-function getProcessor() {
-  if (processor) return processor;
-  processor = unified()
+function buildProcessor(highlight: boolean) {
+  const p = unified()
     .use(remarkParse)
     .use(remarkFrontmatter, ["yaml"])
     .use(remarkGfm)
@@ -97,10 +95,29 @@ function getProcessor() {
     .use(remarkRehype, { allowDangerousHtml: true })
     .use(rehypeRaw)
     .use(rehypeCallouts)
-    .use(rehypeKatex)
-    .use(rehypeShiki, { themes: { light: "github-light", dark: "github-dark" }, defaultColor: false })
-    .use(rehypeStringify) as any;
-  return processor!;
+    .use(rehypeKatex);
+  if (highlight) p.use(rehypeShiki, { themes: { light: "github-light", dark: "github-dark" }, defaultColor: false });
+  return p.use(rehypeStringify) as any;
+}
+
+let processor: ReturnType<typeof unified> | null = null;
+let checkProcessor: ReturnType<typeof unified> | null = null;
+function getProcessor() {
+  return (processor ??= buildProcessor(true));
+}
+
+/**
+ * The viewer's pipeline minus syntax highlighting, for `myd check` (issue #22).
+ *
+ * Same plugins in the same order, so every construct that can produce an error block — an invalid
+ * explainer, unrenderable math, raw HTML — is exercised exactly as the server exercises it. Shiki
+ * is the one omission: loading its grammars and themes costs ~7s on a cold process against ~30ms
+ * for everything else, and highlighting cannot fail into an error block (an unknown language falls
+ * back to plain text). Dropping it buys the whole check for a rounding error on review startup.
+ */
+export async function renderForCheck(clean: string): Promise<string> {
+  checkProcessor ??= buildProcessor(false);
+  return String(await (checkProcessor as any).process(clean));
 }
 
 export type Block = { id: string; index: number; name: string | null; type: string; start: number; end: number; head: string; guard: string };
