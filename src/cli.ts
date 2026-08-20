@@ -11,6 +11,7 @@ import { getSemanticObject, listSemanticObjects, replaceSemanticObject } from ".
 import { InvalidPublicOrigin, normalizePublicOrigin, reviewUrl } from "./public-url.ts";
 import { handleViewerUrl, reviewViewerUrl } from "./viewer-url.ts";
 import { pathParam } from "./url-path.ts";
+import { commandHelp, topLevelHelp, unknownCommand } from "./cli-help.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const argv = process.argv.slice(2);
@@ -160,38 +161,21 @@ function blocksOf(file: string) {
   return { doc, blocks: topBlocks(doc) };
 }
 
-const HELP = `myd — Markdown viewer + annotations + agent CLI
-
-  myd view <file.md> [--wait] [--timeout S] [--no-open] [--session ID]   open and return; --wait is explicit synchronous mode
-      opening a desktop browser is best-effort: a headless box still creates the review, prints the URL and exits 0 (--json: browserOpened/browserError)
-  myd wait <file.md> [--timeout S]          explicit synchronous wait for Done (maximum default: 1800 seconds)
-  myd comments <file.md> [--all]            pending review items (comments/suggestions/replies) as JSON
-  myd reply <file.md> <id> <message>        append a reply (by AI)
-  myd resolve <file.md> <id> [--summary S]  mark an item resolved
-  myd blocks <file.md>                      list blocks with ids, types, offsets
-  myd block <file.md> <id>                  print one block's source (--json adds version and metadata)
-  myd set-block <file.md> <id> --version V [--expect G] [--file F]   replace a block; positional ids require guard G
-  myd insert <file.md> <id> --version V [--expect G] [--file F]      insert by block; positional ids require guard G
-  myd objects <file.md>                     list patchable semantic objects as block›target
-  myd object <file.md> <block›target>        print one semantic object's editable YAML
-  myd set-object <file.md> <block›target> --version V [--file F]   guarded validated replacement
-  myd shot <file.md> [out.png] [--width W]  screenshot the rendered document (headless Chrome)
-  myd export <file.md> [out.html]           single self-contained HTML (delivery artifact)
-  myd publish <file.md> [--output-dir DIR] [--profile NAME]   immutable release bundle + archive index
-  myd diff <old.md> <new.md> [out.md]       CriticMarkup diff between two versions
-  myd guide [topic]                         agent guide; topics: workflow blocks objects explainers rich criticmarkup export api
-  myd install-prompt [--claude|--codex|--file F] [--remove]   idempotently (re)install the myd block into agent instruction files (default: both)
-  myd serve [--public-url URL]              run the server in the foreground; --public-url (or MYD_PUBLIC_URL) enables remote review
-  myd status | stop
-Flags: --json for machine output.
-
-Remote review: set MYD_PUBLIC_URL=https://review.example.test (or myd serve --public-url …) and point an
-HTTPS proxy or tunnel at the local server. myd view then prints that origin's /review/<id>
-URL and launches no desktop browser. Anyone who can reach that origin can open, annotate and complete
-every review on the server — the inbox lists them all — so restrict the proxy accordingly. --session (else MYD_SESSION/CLAUDE_CODE_SESSION_ID) scopes a review to one caller, so re-viewing a document retires only that caller's earlier tab.`;
+// `myd <cmd> --help` and `myd help <cmd>` render the same page; the flag is checked before the
+// switch so it never reaches a command that would demand arguments first.
+if (flags.help && cmd && cmd !== "help") {
+  const page = commandHelp(cmd);
+  if (page) { console.log(page); process.exit(0); }
+  die(unknownCommand(cmd));
+}
 
 switch (cmd) {
-  case undefined: case "help": case "--help": console.log(HELP); break;
+  case undefined: case "help": case "--help": {
+    if (!pos[0]) { console.log(topLevelHelp()); break; }
+    const page = commandHelp(pos[0]!);
+    if (!page) die(unknownCommand(pos[0]!));
+    console.log(page); break;
+  }
   case "install-prompt": {
     const block = fs.readFileSync(path.join(ROOT, "docs/prompt.md"), "utf8").trim();
     const BEGIN = "<!-- myd:begin (managed by `myd install-prompt`; edit ~/LocalDev/mydraft/docs/prompt.md instead) -->", END = "<!-- myd:end -->";
@@ -234,7 +218,7 @@ switch (cmd) {
     const VERB_TOPIC: Record<string, string> = { view: "workflow", wait: "workflow", comments: "workflow", reply: "workflow", resolve: "workflow", diff: "workflow", shot: "workflow", blocks: "blocks", block: "blocks", "set-block": "blocks", insert: "blocks", object: "explainers", "set-object": "explainers", explainer: "explainers", export: "export", serve: "api", status: "api", annotate: "objects", comment: "objects", suggest: "objects", markup: "criticmarkup", mermaid: "rich", vega: "rich", html: "rich", math: "rich" };
     if (VERB_TOPIC[pos[0]]) pos[0] = VERB_TOPIC[pos[0]]!;
     const m = new RegExp(`\\n## ${pos[0]}\\b[\\s\\S]*?(?=\\n## |$)`).exec(g);
-    if (!m) die(`no topic ${pos[0]}; topics: workflow blocks objects explainers rich criticmarkup export api`);
+    if (!m) die(`no topic ${pos[0]}; topics: workflow blocks objects explainers rich criticmarkup export api remote`);
     console.log(m![0].trim()); break;
   }
   case "serve": {
@@ -383,5 +367,5 @@ switch (cmd) {
     out(result, `Published ${result.releaseId}\nArtifact: ${result.artifactPath}\nManifest: ${result.manifestPath}`); break;
   }
   case "diff": { const r = Bun.spawnSync(["python3", path.join(ROOT, "bin/rd-diff"), ...pos], { stdout: "inherit", stderr: "inherit" }); process.exit(r.exitCode); }
-  default: die(`unknown command: ${cmd}\n\n${HELP}`);
+  default: die(unknownCommand(cmd));
 }
