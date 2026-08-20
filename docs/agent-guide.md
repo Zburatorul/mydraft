@@ -3,7 +3,7 @@
 `myd` is a Markdown viewer with an annotation layer and an agent CLI. The `.md` file is the only state:
 the human reads a rich rendering and annotates it; annotations are written back into the file as
 Roughdraft-flavored CriticMarkup + YAML endmatter at exact source offsets; the agent reads/edits the
-file with the CLI. Everything below is discoverable via `myd help` and `myd guide <topic>`.
+file with the CLI. Everything below is discoverable via `myd guide <topic>`; for one command's flags, guards and an example, use `myd help <command>` (or `myd <command> --help`).
 
 Topics: `workflow` · `blocks` · `objects` · `explainers` · `rich` · `criticmarkup` · `export` · `api`
 
