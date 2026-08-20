@@ -31,7 +31,7 @@ const GUARD_RULES = [
 export const COMMANDS: Record<string, CommandHelp> = {
   view: {
     group: "review",
-    syntax: "<file.md> [--wait] [--timeout S] [--no-open] [--session ID]",
+    syntax: "<file.md> [--wait] [--timeout S] [--no-open] [--session ID] [--skip-check]",
     summary: "open a review in the viewer; returns immediately unless --wait",
     detail:
       "Creates a review, prints its URL, and locally opens a desktop browser. The default is\n" +
@@ -43,6 +43,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
       ["--timeout S", "seconds to block with --wait (default 1800; must be positive)"],
       ["--no-open", "never launch a desktop browser; the URL is still printed"],
       ["--session ID", "scope the review to one caller (default: $MYD_SESSION, else $CLAUDE_CODE_SESSION_ID)"],
+      ["--skip-check", "open the review without the structural preflight"],
       JSON_FLAG,
     ],
     sections: [
@@ -50,6 +51,10 @@ export const COMMANDS: Record<string, CommandHelp> = {
         "Without --wait: nonblocking, exits 0 once the review is created.",
         "With --wait: blocks until Done, then prints the reviewer's note. Exits 1 if the wait times out, or if the review was superseded or archived and can no longer be completed.",
         "Use --wait only when the caller can genuinely block. If it would mean repeated polling, drop the waiter and pick the review up next turn with `myd comments`.",
+      ]],
+      ["Preflight", [
+        "`myd check` runs first, before the server starts. Structural errors print with file and line and exit 2 without creating a review; warnings print and the review opens anyway.",
+        "Mermaid fences are not parsed here — run `myd check` for that. Use --skip-check to open regardless.",
       ]],
       ["Browser", [
         "Opening a browser is best-effort. A headless host still creates the review, prints the URL, warns on stderr and exits 0; --json reports browserOpened and, on failure, browserError.",
@@ -61,7 +66,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
       "# …later turn…",
       "myd comments plans/roadmap.md        # read what came back",
     ],
-    seeAlso: ["myd wait", "myd comments", "myd guide workflow", "myd guide remote"],
+    seeAlso: ["myd check", "myd wait", "myd comments", "myd guide workflow", "myd guide remote"],
   },
   wait: {
     group: "review",
@@ -124,6 +129,31 @@ export const COMMANDS: Record<string, CommandHelp> = {
     sections: [["Versioning", ["Unguarded, like `myd reply`: it always applies and advances the version."]]],
     example: ['myd resolve plans/roadmap.md c3 --summary "Rewrote the paragraph"'],
     seeAlso: ["myd comments", "myd reply"],
+  },
+  check: {
+    group: "review",
+    syntax: "<file.md> [--no-mermaid]",
+    summary: "browserless structural validation; myd view runs it first",
+    detail:
+      "Answers one question: will this document open as a coherent review? It parses the Markdown and\n" +
+      "the review endmatter, checks annotation, block and object ids, validates explainer and chart\n" +
+      "fences, renders server-side and looks for error blocks, and resolves local references.\n" +
+      "`myd view` runs this same check first, minus Mermaid.",
+    args: [["<file.md>", "the document to validate"]],
+    flags: [["--no-mermaid", "skip parsing Mermaid fences (what the myd view preflight does)"], JSON_FLAG],
+    sections: [
+      ["Exit codes", [
+        "0 when there are no errors, even if there are warnings.",
+        "2 when any error was found. Warnings never fail the command.",
+      ]],
+      ["What it cannot see", [
+        "This is a structural preflight, not a rendering check: typography, responsive layout, client-side interaction, clipping, overlap and final pixels are all invisible to it.",
+        "`myd shot` renders the document in headless Chrome and is the stronger visual check.",
+        "Mermaid is parsed here but not in the `myd view` preflight — loading the parser costs about ten times the rest of the check.",
+      ]],
+    ],
+    example: ["myd check plans/roadmap.md --json"],
+    seeAlso: ["myd view", "myd shot"],
   },
   blocks: {
     group: "source",

@@ -5,6 +5,8 @@ the human reads a rich rendering and annotates it; annotations are written back 
 Roughdraft-flavored CriticMarkup + YAML endmatter at exact source offsets; the agent reads/edits the
 file with the CLI. Everything below is discoverable via `myd guide <topic>`; for one command's flags, guards and an example, use `myd help <command>` (or `myd <command> --help`).
 
+`myd view` runs a browserless structural check before it opens anything: unparsable Markdown or review endmatter, duplicate annotation/block ids, an invalid explainer or chart fence, or a document that renders an error block stops the command with a file:line diagnostic and exit 2, and no review is created. Warnings — a missing local link, a malformed block name — print and the review opens anyway. `myd check FILE [--json]` runs the same check on demand and additionally parses Mermaid; `myd view --skip-check` opts out. It is a structural preflight only: typography, layout, clipping and client-side rendering are invisible to it, which is what `myd shot` is for.
+
 Topics: `workflow` · `blocks` · `objects` · `explainers` · `rich` · `criticmarkup` · `export` · `api`
 
 ---

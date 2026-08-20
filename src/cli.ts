@@ -12,6 +12,7 @@ import { InvalidPublicOrigin, normalizePublicOrigin, reviewUrl } from "./public-
 import { handleViewerUrl, reviewViewerUrl } from "./viewer-url.ts";
 import { pathParam } from "./url-path.ts";
 import { commandHelp, topLevelHelp, unknownCommand } from "./cli-help.ts";
+import { checkDocument, formatDiagnostics, formatReport } from "./check.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const argv = process.argv.slice(2);
@@ -231,10 +232,30 @@ switch (cmd) {
     if (s!.publicOrigin) console.log(`public review origin ${s!.publicOrigin}`);
     break;
   }
+  case "check": {
+    const file = abs(pos[0]);
+    const report = await checkDocument(file, { mermaid: !flags["no-mermaid"] });
+    out(report, formatReport(report));
+    if (!report.ok) process.exit(2);
+    break;
+  }
   case "status": { const s = await serverAlive(); const origin = s ? publicOriginOf(s) : null; out(s ?? { running: false }, s ? `running on port ${s.port} (pid ${s.pid})${origin ? `\npublic review origin ${origin}` : ""}` : "not running"); break; }
   case "stop": { const s = await serverAlive(); if (s) { try { process.kill(s.pid); } catch {} } out({ stopped: !!s }, s ? "stopped" : "not running"); break; }
   case "view": {
-    const file = abs(pos[0]); const server = await ensureServer(); const { port } = server;
+    const file = abs(pos[0]);
+    // Preflight before the server is even started: a document that cannot open as a coherent
+    // review should not become one. Mermaid is left to `myd check` — parsing it costs an order of
+    // magnitude more than everything else here, which is the delay issue #22 rules out.
+    if (!flags["skip-check"]) {
+      const report = await checkDocument(file);
+      if (!report.ok) {
+        console.error(formatReport(report));
+        console.error("\nNo review was created. Fix these, or re-run with --skip-check.");
+        process.exit(2);
+      }
+      if (report.warnings.length) console.error(formatDiagnostics(file, report.warnings));
+    }
+    const server = await ensureServer(); const { port } = server;
     const origin = publicOriginOf(server);
     const { reviewId } = await trackReview(port, file);
     // Remote mode prints a URL for another machine and never touches a desktop browser:
