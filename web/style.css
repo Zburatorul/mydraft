@@ -32,7 +32,7 @@ button.link { border: none; background: none; color: var(--accent); padding: 0 4
 .theme-toggle-icon[data-theme-icon="moon"]::before { content: "☾"; }
 .theme-toggle-icon[data-theme-icon="sun"]::before { content: "☀"; }
 .toggle { color: var(--muted); font-size: 12px; display: flex; gap: 4px; align-items: center; }
-main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 24px; max-width: 1280px; margin: 0 auto; padding: 24px 16px 120px; }
+main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, 300px); gap: 22px; max-width: 1440px; margin: 0 auto; padding: 24px 16px 120px; }
 main.rail-closed { grid-template-columns: minmax(0, 1fr); }
 @media (max-width: 1200px) { main { grid-template-columns: 1fr; } #rail { position: static; order: 2; max-height: none; } }
 #doc { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 32px 40px; min-width: 0; }
@@ -66,9 +66,10 @@ main.rail-closed { grid-template-columns: minmax(0, 1fr); }
 .rich.show-src .rich-src { display: block; } .rich.show-src .rich-view { display: none; }
 .rich .rich-view { overflow: auto; }
 .rich .rich-view svg { max-width: 100%; height: auto; }
-.rich .src-toggle, .rich .obj-comment { position: absolute; top: 6px; font-size: 11px; padding: 2px 7px; opacity: .55; }
+.rich .src-toggle, .rich .obj-comment, .rich .diagram-open { position: absolute; top: 6px; font-size: 11px; padding: 2px 7px; opacity: .55; z-index: 2; }
 .rich .src-toggle { right: 6px; } .rich .obj-comment { right: 66px; }
-.rich:hover .src-toggle, .rich:hover .obj-comment { opacity: 1; }
+.rich .diagram-open { right: 100px; }
+.rich:hover .src-toggle, .rich:hover .obj-comment, .rich:hover .diagram-open { opacity: 1; }
 .rich .obj { cursor: pointer; } .rich .obj:hover { filter: brightness(1.15) drop-shadow(0 0 3px var(--accent)); }
 .rich-error { color: #ef4444; font-size: 13px; white-space: pre-wrap; }
 .island-frame { width: 100%; border: 0; min-height: 120px; background: #fff; border-radius: 6px; }
@@ -175,6 +176,24 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 dialog label { display: block; font-size: 13px; color: var(--muted); margin: 8px 0; }
 dialog textarea, .replyForm input { width: 100%; font: inherit; font-size: 14px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); margin-top: 4px; }
 dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 12px 0 0; padding: 0; }
+.dialog-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+#changesDlg { width: min(960px, 96vw); max-width: none; }
+.revision-diff { max-height: min(76vh, 900px); overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--code-bg); }
+.diff-hunk + .diff-hunk { border-top: 12px solid var(--panel); }
+.diff-hunk-heading { position: sticky; top: 0; padding: 4px 12px; color: var(--muted); background: color-mix(in srgb, var(--accent) 9%, var(--panel)); font: 12px/1.5 ui-monospace, monospace; }
+.diff-line { display: block; min-height: 1.5em; padding: 2px 12px 2px 34px; white-space: pre-wrap; overflow-wrap: anywhere; text-decoration: none; font: 13px/1.55 ui-monospace, "JetBrains Mono", Menlo, monospace; }
+.diff-line::before { display: inline-block; width: 22px; margin-left: -24px; color: var(--muted); }
+.diff-line.context::before { content: " "; }
+.diff-line.removed { color: inherit; background: color-mix(in srgb, #ef4444 15%, transparent); }
+.diff-line.removed::before { content: "−"; color: #c62f3c; }
+.diff-line.added { color: inherit; background: color-mix(in srgb, #10b981 15%, transparent); }
+.diff-line.added::before { content: "+"; color: #0b8b61; }
+.diagram-dialog { width: min(1200px, 96vw); max-width: none; padding: 12px; }
+.diagram-toolbar { margin: 0 0 10px; }
+.diagram-viewport { position: relative; height: min(78vh, 820px); overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); cursor: grab; touch-action: none; }
+.diagram-viewport:active { cursor: grabbing; }
+.diagram-stage { width: max-content; min-width: 100%; transform-origin: 0 0; will-change: transform; }
+.diagram-stage svg { display: block; min-width: 100%; max-width: none !important; height: auto; }
 .anchor-preview { font-size: 13px; color: var(--muted); border-left: 3px solid var(--hl-comment); padding: 2px 8px; max-height: 80px; overflow: auto; }
 
 /* rail threads */

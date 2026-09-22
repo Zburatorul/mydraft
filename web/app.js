@@ -52,7 +52,7 @@ function documentRef() {
   return reviewId ? { reviewId } : { path: docPath };
 }
 
-const railMediaQuery = matchMedia("(max-width: 1200px)");
+const railMediaQuery = matchMedia("(max-width: 1360px)");
 let railPreference = null;
 function setRailOpen(open) {
   railPanel.hidden = !open;
@@ -61,9 +61,14 @@ function setRailOpen(open) {
   railToggle.setAttribute("aria-label", open ? "Hide comments" : "Show comments");
   railToggle.querySelector("[data-rail-label]").textContent = open ? "Hide comments" : "Show comments";
 }
-setRailOpen(!railMediaQuery.matches);
+function syncRailDefault() {
+  if (railPreference !== null) return;
+  const hasThreads = state.items.some((item) => item.kind !== "reply");
+  setRailOpen(hasThreads && !railMediaQuery.matches);
+}
+setRailOpen(false);
 railToggle.onclick = () => { railPreference = railPanel.hidden; setRailOpen(railPreference); };
-railMediaQuery.addEventListener("change", (event) => { if (railPreference === null) setRailOpen(!event.matches); });
+railMediaQuery.addEventListener("change", syncRailDefault);
 
 function applyReviewStatus(status) {
   reviewStatus = status;
@@ -112,9 +117,11 @@ async function load() {
   if (seq !== loadSeq) return;
   paintHighlights();
   renderRail();
+  syncRailDefault();
   window.scrollTo(0, y);
   statusEl.textContent = revisionLabel(data.revision, data.version);
   statusEl.title = revisionTitle(data.revision, data.version);
+  $("#changesBtn").hidden = !data.changesAvailable;
   await checkTracking();
 }
 
@@ -142,7 +149,7 @@ function applyTheme(theme, persist = false) {
 applyTheme(resolveTheme(localStorage.getItem("myd-theme"), matchMedia("(prefers-color-scheme: dark)").matches));
 themeBtn.onclick = () => {
   applyTheme(toggledTheme(currentTheme()), true);
-  docEl.querySelectorAll("[data-hydrated]:not(.explainer)").forEach((el) => { delete el.dataset.hydrated; el.querySelectorAll(".rich-view, .src-toggle, .obj-comment").forEach((x) => x.remove()); });
+  docEl.querySelectorAll("[data-hydrated]:not(.explainer)").forEach((el) => { delete el.dataset.hydrated; el.querySelectorAll(".rich-view, .src-toggle, .obj-comment, .diagram-open").forEach((x) => x.remove()); });
   hydrateRich(loadSeq).then(paintHighlights);
 };
 
@@ -163,7 +170,7 @@ async function hydrateRich(seq) {
       try {
         const { svg } = await mermaidMod.render(`mm${Date.now()}${i++}`, src);
         const host = document.createElement("div"); host.className = "rich-view"; host.innerHTML = svg;
-        el.appendChild(host); addSourceToggle(el);
+        el.appendChild(host); addSourceToggle(el); addDiagramOpen(el, host);
         // clickable nodes → object comments
         host.querySelectorAll("g.node, g.edgeLabel, .cluster").forEach((g) => { g.classList.add("obj"); g.addEventListener("click", (e) => { e.stopPropagation(); objectComment(el, g.id || g.getAttribute("data-id") || g.textContent.trim().slice(0, 40), e); }); });
       } catch (err) { el.insertAdjacentHTML("beforeend", `<div class="rich-error">Mermaid: ${String(err.message || err)}</div>`); }
@@ -210,7 +217,70 @@ function addSourceToggle(el) {
   const c = document.createElement("button"); c.className = "obj-comment"; c.title = "Comment on this block"; c.textContent = "💬";
   c.onclick = (e) => objectComment(el, null, e); el.prepend(c);
 }
+function addDiagramOpen(el, host) {
+  const button = document.createElement("button");
+  button.className = "diagram-open";
+  button.type = "button";
+  button.setAttribute("aria-label", "Open diagram");
+  button.title = "Open diagram";
+  button.textContent = "⛶";
+  button.onclick = () => openDiagram(host.querySelector("svg"));
+  el.prepend(button);
+}
 function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
+
+// ---------- full-size Mermaid stage ----------
+const diagramDlg = $("#diagramDlg"), diagramViewport = $("#diagramViewport"), diagramStage = $("#diagramStage");
+let diagramScale = 1, diagramX = 0, diagramY = 0, diagramDrag = null;
+function paintDiagramTransform() {
+  diagramStage.dataset.scale = String(diagramScale);
+  diagramStage.style.transform = `translate(${diagramX}px, ${diagramY}px) scale(${diagramScale})`;
+  $("#diagramReset").textContent = `${Math.round(diagramScale * 100)}%`;
+}
+function setDiagramScale(next, originX = diagramViewport.clientWidth / 2, originY = diagramViewport.clientHeight / 2) {
+  const scale = Math.min(4, Math.max(.4, next));
+  const ratio = scale / diagramScale;
+  diagramX = originX - (originX - diagramX) * ratio;
+  diagramY = originY - (originY - diagramY) * ratio;
+  diagramScale = scale;
+  paintDiagramTransform();
+}
+function resetDiagram() {
+  diagramScale = 1; diagramX = 0; diagramY = 0; paintDiagramTransform();
+  const svg = diagramStage.querySelector("svg");
+  if (!svg) return;
+  const svgRect = svg.getBoundingClientRect();
+  diagramX = Math.max(0, (diagramViewport.clientWidth - svgRect.width) / 2);
+  diagramY = Math.max(0, (diagramViewport.clientHeight - svgRect.height) / 2);
+  paintDiagramTransform();
+}
+function openDiagram(svg) {
+  if (!svg) return;
+  diagramStage.replaceChildren(svg.cloneNode(true));
+  diagramDlg.showModal();
+  resetDiagram();
+  diagramViewport.focus();
+}
+$("#diagramZoomIn").onclick = () => setDiagramScale(diagramScale * 1.25);
+$("#diagramZoomOut").onclick = () => setDiagramScale(diagramScale / 1.25);
+$("#diagramReset").onclick = resetDiagram;
+$("#diagramClose").onclick = () => diagramDlg.close();
+diagramViewport.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  const rect = diagramViewport.getBoundingClientRect();
+  setDiagramScale(diagramScale * (event.deltaY < 0 ? 1.12 : 1 / 1.12), event.clientX - rect.left, event.clientY - rect.top);
+}, { passive: false });
+diagramViewport.addEventListener("pointerdown", (event) => {
+  diagramDrag = { x: event.clientX, y: event.clientY, originX: diagramX, originY: diagramY };
+  diagramViewport.setPointerCapture(event.pointerId);
+});
+diagramViewport.addEventListener("pointermove", (event) => {
+  if (!diagramDrag) return;
+  diagramX = diagramDrag.originX + event.clientX - diagramDrag.x;
+  diagramY = diagramDrag.originY + event.clientY - diagramDrag.y;
+  paintDiagramTransform();
+});
+diagramViewport.addEventListener("pointerup", () => { diagramDrag = null; });
 
 window.addEventListener("message", (event) => {
   const frame = [...docEl.querySelectorAll(".rich.island iframe")].find((candidate) => candidate.contentWindow === event.source);
@@ -416,6 +486,42 @@ function scrollToItem(id) {
   if (it?.anchor?.block) docEl.querySelector(`[data-bid="${it.anchor.block}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
 }
 function escape(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+// ---------- revision comparison ----------
+$("#changesBtn").onclick = async () => {
+  const button = $("#changesBtn");
+  button.disabled = true;
+  try {
+    const response = await fetch(`/api/changes?${documentQuery()}`);
+    if (!response.ok) return;
+    const data = await response.json();
+    if (!data.available) { button.hidden = true; return; }
+
+    $("#changesMeta").textContent = `r${data.before.number} → r${data.after.number}`;
+    const body = $("#changesBody");
+    body.replaceChildren();
+    if (!data.hunks.length) {
+      const empty = document.createElement("p"); empty.className = "muted"; empty.textContent = "No textual changes."; body.appendChild(empty);
+    }
+    for (const hunk of data.hunks) {
+      const section = document.createElement("section"); section.className = "diff-hunk";
+      const heading = document.createElement("div"); heading.className = "diff-hunk-heading";
+      heading.textContent = `−${hunk.beforeStart}  +${hunk.afterStart}`;
+      section.appendChild(heading);
+      for (const line of hunk.lines) {
+        const row = document.createElement(line.kind === "added" ? "ins" : line.kind === "removed" ? "del" : "div");
+        row.className = `diff-line ${line.kind}`;
+        row.textContent = line.text || " ";
+        section.appendChild(row);
+      }
+      body.appendChild(section);
+    }
+    $("#changesDlg").showModal();
+  } finally {
+    button.disabled = false;
+  }
+};
+$("#changesClose").onclick = () => $("#changesDlg").close();
 
 // ---------- done ----------
 $("#doneBtn").onclick = () => {
