@@ -188,6 +188,24 @@ describe("cross-element annotation in a real browser", () => {
     await page.close();
   }, E2E_TIMEOUT_MS);
 
+  test("a comment draft keeps focus and its text across a live document refresh", async () => {
+    const { fixture, page } = await trackedPage("comment-focus.md", SOURCE, { width: 1400, height: 900 });
+    await selectAcrossLink(page);
+    await page.locator('#popover [data-act="comment"]').click();
+
+    const comment = page.locator("#edBody");
+    await comment.pressSequentially("Keep this comment draft", { delay: 20 });
+    expect(await comment.evaluate((textarea) => textarea === document.activeElement)).toBeTrue();
+
+    const reloaded = page.waitForResponse((response) => response.url().includes("/api/doc?") && response.request().method() === "GET");
+    fs.appendFileSync(fixture, "\n");
+    await reloaded;
+
+    expect(await comment.evaluate((textarea) => textarea === document.activeElement)).toBeTrue();
+    expect(await comment.inputValue()).toBe("Keep this comment draft");
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
   test("Ctrl+Enter submits the Done note", async () => {
     const { page } = await trackedPage("done-shortcut.md");
     await page.locator("#doneBtn").click();
@@ -267,6 +285,80 @@ describe("cross-element annotation in a real browser", () => {
     await toggle.click();
     expect(await rail.isHidden()).toBeTrue();
     expect(await toggle.getAttribute("aria-expanded")).toBe("false");
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
+  test("an empty comments rail does not squeeze the document at laptop width", async () => {
+    const { page } = await trackedPage("laptop-comments.md", SOURCE, { width: 1280, height: 900 });
+
+    expect(await page.locator("#rail").isHidden()).toBeTrue();
+    expect(await page.locator("#railToggle").getAttribute("aria-expanded")).toBe("false");
+    expect(await page.locator("#doc").evaluate((doc) => doc.getBoundingClientRect().width)).toBeGreaterThan(1100);
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
+  test("a Mermaid diagram opens in a zoomable full-size stage", async () => {
+    const source = [
+      "# Dense diagram",
+      "",
+      "```mermaid",
+      "flowchart LR",
+      "  A[Collect evidence] --> B[Build evaluator] --> C[Run trials] --> D[Inspect failures] --> E[Revise signal] --> F[Run again]",
+      "```",
+      "",
+    ].join("\n");
+    const { page } = await trackedPage("zoomable-mermaid.md", source, { width: 1280, height: 900 });
+    await page.locator(".rich.mermaid .rich-view svg").waitFor();
+
+    const open = page.getByRole("button", { name: "Open diagram" });
+    expect(await open.count()).toBe(1);
+    await open.click();
+    expect(await page.locator("#diagramDlg").isVisible()).toBeTrue();
+
+    const initialCenters = await page.locator("#diagramViewport").evaluate((viewport) => {
+      const svg = viewport.querySelector("svg")!;
+      const viewportRect = viewport.getBoundingClientRect();
+      const svgRect = svg.getBoundingClientRect();
+      return {
+        viewportX: viewportRect.left + viewportRect.width / 2,
+        viewportY: viewportRect.top + viewportRect.height / 2,
+        svgX: svgRect.left + svgRect.width / 2,
+        svgY: svgRect.top + svgRect.height / 2,
+      };
+    });
+    expect(Math.abs(initialCenters.svgX - initialCenters.viewportX)).toBeLessThanOrEqual(2);
+    expect(Math.abs(initialCenters.svgY - initialCenters.viewportY)).toBeLessThanOrEqual(2);
+
+    const stage = page.locator("#diagramStage");
+    const before = Number(await stage.getAttribute("data-scale"));
+    await page.getByRole("button", { name: "Zoom in" }).click();
+    expect(Number(await stage.getAttribute("data-scale"))).toBeGreaterThan(before);
+
+    await page.getByRole("button", { name: "Close diagram" }).click();
+    expect(await page.locator("#diagramDlg").isVisible()).toBeFalse();
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
+  test("the latest revision exposes a change-focused comparison with its predecessor", async () => {
+    const { fixture, page } = await trackedPage("revision-comparison.md", "# Plan\n\nUse the old verifier.\n", { width: 1400, height: 900 });
+    expect(await page.locator("#changesBtn").isHidden()).toBeTrue();
+
+    const reloaded = page.waitForResponse((response) => response.url().includes("/api/doc?") && response.request().method() === "GET");
+    fs.writeFileSync(fixture, "# Plan\n\nUse the improved verifier.\n\nAdd adversarial trials.\n");
+    await reloaded;
+
+    const changes = page.locator("#changesBtn");
+    expect(await changes.isVisible()).toBeTrue();
+    const comparison = page.waitForResponse((response) => response.url().includes("/api/changes?") && response.request().method() === "GET");
+    await changes.click();
+    const comparisonResponse = await comparison;
+    expect(comparisonResponse.status()).toBe(200);
+    expect((await comparisonResponse.json()).available).toBeTrue();
+
+    expect(await page.locator("#changesDlg").isVisible()).toBeTrue();
+    expect(await page.locator("#changesDlg del").allTextContents()).toContain("Use the old verifier.");
+    expect(await page.locator("#changesDlg ins").allTextContents()).toContain("Use the improved verifier.");
+    expect(await page.locator("#changesDlg ins").allTextContents()).toContain("Add adversarial trials.");
     await page.close();
   }, E2E_TIMEOUT_MS);
 });

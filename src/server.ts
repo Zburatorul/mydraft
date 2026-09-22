@@ -11,6 +11,7 @@ import { applySelectionAnnotation } from "./selection-annotation.ts";
 import { mutateDocument } from "./document-mutation.ts";
 import { normalizePublicOrigin } from "./public-url.ts";
 import { DocumentHandles } from "./document-handles.ts";
+import { revisionDiff } from "./revision-diff.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const WEB = path.join(ROOT, "web");
@@ -45,13 +46,14 @@ function json(data: unknown, status = 400) {
 function readDoc(p: string): Doc {
   const abs = path.resolve(p);
   const doc = loadDoc(abs, fs.readFileSync(abs, "utf8"));
-  revisionTracker.observe(abs, doc.version, fs.statSync(abs).mtime.toISOString());
+  // Compare the reader-facing Markdown, not CriticMarkup/endmatter transport changes.
+  revisionTracker.observe(abs, doc.version, fs.statSync(abs).mtime.toISOString(), doc.clean);
   return doc;
 }
 function writeDoc(doc: Doc, transform: (current: Doc) => string, expectedVersion?: string): Doc {
   const result = mutateDocument(doc.path, transform, expectedVersion === undefined ? {} : { expectedVersion });
   const written = result.document;
-  revisionTracker.observe(doc.path, written.version);
+  revisionTracker.observe(doc.path, written.version, new Date().toISOString(), written.clean);
   reviewTracker.advance(doc.path, written.version);
   return written;
 }
@@ -248,7 +250,28 @@ export function startServer(port = 7474, options: { publicUrl?: string | null } 
           if (req.headers.get("accept")?.includes("text/markdown")) return new Response(doc.source, { headers: { "content-type": "text/markdown" } });
           const html = await renderDoc(doc);
           const byPath = !url.searchParams.get("review") && !!url.searchParams.get("path");
-          return json({ ...(byPath ? { path: doc.path } : {}), name: path.basename(doc.path), version: doc.version, revision: revisionTracker.current(doc.path), html, items: doc.items, cleanLength: doc.clean.length }, 200);
+          return json({
+            ...(byPath ? { path: doc.path } : {}),
+            name: path.basename(doc.path),
+            version: doc.version,
+            revision: revisionTracker.current(doc.path),
+            previousRevision: revisionTracker.previous(doc.path),
+            changesAvailable: revisionTracker.comparison(doc.path) !== null,
+            html,
+            items: doc.items,
+            cleanLength: doc.clean.length,
+          }, 200);
+        }
+        if (p === "/api/changes") {
+          const doc = readDocFor(url.searchParams.get("path"), url.searchParams.get("review"));
+          const comparison = revisionTracker.comparison(doc.path);
+          if (!comparison) return json({ available: false }, 200);
+          return json({
+            available: true,
+            before: { number: comparison.before.number, version: comparison.before.version, createdAt: comparison.before.createdAt },
+            after: { number: comparison.after.number, version: comparison.after.version, createdAt: comparison.after.createdAt },
+            hunks: revisionDiff(comparison.before.source, comparison.after.source),
+          }, 200);
         }
         if (p === "/api/raw") {
           const doc = readDocFor(url.searchParams.get("path"), url.searchParams.get("review"));
