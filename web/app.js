@@ -54,6 +54,8 @@ function documentRef() {
 
 const railMediaQuery = matchMedia("(max-width: 1360px)");
 let railPreference = null;
+let railHadThreads = null;
+let railAutoOpen = false;
 function setRailOpen(open) {
   railPanel.hidden = !open;
   mainEl.classList.toggle("rail-closed", !open);
@@ -62,9 +64,14 @@ function setRailOpen(open) {
   railToggle.querySelector("[data-rail-label]").textContent = open ? "Hide comments" : "Show comments";
 }
 function syncRailDefault() {
-  if (railPreference !== null) return;
   const hasThreads = state.items.some((item) => item.kind !== "reply");
-  setRailOpen(hasThreads && !railMediaQuery.matches);
+  if (railPreference !== null) { railHadThreads = hasThreads; return; }
+  // Keep an initially empty/narrow review spacious, but reveal the thread a reviewer
+  // just created. Once revealed, live reloads must not hide the reply controls again.
+  if (railHadThreads === false && hasThreads) railAutoOpen = true;
+  if (!hasThreads) railAutoOpen = false;
+  setRailOpen(hasThreads && (railAutoOpen || !railMediaQuery.matches));
+  railHadThreads = hasThreads;
 }
 setRailOpen(false);
 railToggle.onclick = () => { railPreference = railPanel.hidden; setRailOpen(railPreference); };

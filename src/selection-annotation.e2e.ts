@@ -268,6 +268,22 @@ describe("cross-element annotation in a real browser", () => {
     await page.close();
   }, E2E_TIMEOUT_MS);
 
+  test("adding the first comment opens its rail so the new thread is immediately usable", async () => {
+    const { page } = await trackedPage("first-comment.md", SOURCE, { width: 1280, height: 900 });
+    expect(await page.locator("#rail").isHidden()).toBeTrue();
+
+    await selectAcrossLink(page);
+    await page.locator('#popover [data-act="comment"]').click();
+    await page.locator("#edBody").fill("Show this thread.");
+    const saved = page.waitForResponse((response) => response.url().endsWith("/api/annotate") && response.request().method() === "POST");
+    await page.locator("#edSave").click();
+    expect((await saved).status()).toBe(200);
+
+    await page.locator(".replyForm input").first().waitFor();
+    expect(await page.locator("#rail").isVisible()).toBeTrue();
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
   test("the comments rail defaults closed on a narrow screen and remains reopenable", async () => {
     const { page } = await trackedPage("narrow-comments.md", SOURCE, { width: 1100, height: 900 });
     const rail = page.locator("#rail");
