@@ -12,7 +12,6 @@ import { InvalidPublicOrigin, normalizePublicOrigin, reviewUrl } from "./public-
 import { handleViewerUrl, reviewViewerUrl } from "./viewer-url.ts";
 import { pathParam } from "./url-path.ts";
 import { commandHelp, topLevelHelp, unknownCommand } from "./cli-help.ts";
-import { checkDocument, formatDiagnostics, formatReport } from "./check.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const argv = process.argv.slice(2);
@@ -39,6 +38,7 @@ const waitTimeout = () => {
   if (!Number.isFinite(seconds) || seconds <= 0) die("--timeout must be a positive number of seconds");
   return seconds;
 };
+const loadStructuralCheck = () => import("./check.ts");
 
 /**
  * The origin a reviewer on another device uses, or null for local-only mode.
@@ -61,7 +61,10 @@ async function ensureServer(): Promise<{ port: number; publicUrl?: string }> {
   publicOriginOf(null);
   const child = spawn(process.execPath, [path.join(ROOT, "src/server.ts")], { detached: true, stdio: "ignore", env: { ...process.env } });
   child.unref();
-  for (let i = 0; i < 40; i++) { await Bun.sleep(100); const a = await serverAlive(); if (a) return a; }
+  // Cold syntax-highlighter/module startup can exceed four seconds on a loaded CI host. A late
+  // server is worse than a slow one: the CLI reports failure even though the detached child comes
+  // online moments later and keeps the port occupied. Give that one-time startup a bounded runway.
+  for (let i = 0; i < 100; i++) { await Bun.sleep(100); const a = await serverAlive(); if (a) return a; }
   die("could not start myd server"); return { port: 0 };
 }
 // One agent session that re-opens the same document is continuing its own review, not
@@ -233,6 +236,7 @@ switch (cmd) {
     break;
   }
   case "check": {
+    const { checkDocument, formatReport } = await loadStructuralCheck();
     const file = abs(pos[0]);
     const report = await checkDocument(file, { mermaid: !flags["no-mermaid"] });
     out(report, formatReport(report));
@@ -244,10 +248,11 @@ switch (cmd) {
   case "view": {
     const file = abs(pos[0]);
     // Preflight before the server is even started: a document that cannot open as a coherent
-    // review should not become one. Mermaid is left to `myd check` — parsing it costs an order of
-    // magnitude more than everything else here, which is the delay issue #22 rules out.
+    // review should not become one. Mermaid is loaded only when the document contains a Mermaid
+    // fence, so ordinary review startup does not pay for the parser.
     if (!flags["skip-check"]) {
-      const report = await checkDocument(file);
+      const { checkDocument, formatDiagnostics, formatReport } = await loadStructuralCheck();
+      const report = await checkDocument(file, { mermaid: true });
       if (!report.ok) {
         console.error(formatReport(report));
         console.error("\nNo review was created. Fix these, or re-run with --skip-check.");

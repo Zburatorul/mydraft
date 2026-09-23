@@ -8,7 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { fenceRanges, loadDoc, splitEndmatter, type Doc } from "./doc.ts";
-import { renderForCheck, topBlocks } from "./render.ts";
+import { renderForCheck, richFenceKind, topBlocks, topCodeFences } from "./render.ts";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkGfm from "remark-gfm";
@@ -67,15 +67,6 @@ const VENDOR_POLICY: Record<string, Severity | "drop"> = {
 };
 const vendorSeverity = (code: string): Severity | "drop" =>
   VENDOR_POLICY[code] ?? (code.startsWith("missing-metadata-") || code.startsWith("missing-endmatter-") ? "warning" : "warning");
-
-/** Fence languages the renderer treats as rich; anything else is ordinary code. */
-const VEGA_LANGS = new Set(["vega-lite", "vega", "chart"]);
-/** Markers the render pipeline emits when a block could not be built. */
-const ERROR_MARKERS = [
-  { needle: "rich-error", code: "render-error-block", what: "a rich block rendered as an error" },
-  { needle: "explainer invalid", code: "render-error-block", what: "an explainer rendered as an error" },
-  { needle: "katex-error", code: "render-math-error", what: "math rendered as an error" },
-];
 
 function locator(source: string) {
   const starts = [0];
@@ -192,10 +183,19 @@ function checkBlocks(doc: Doc, at: (offset: number) => { line: number; column: n
 /** Rich fences whose payload myd can validate without a browser. */
 function checkFences(doc: Doc, at: (offset: number) => { line: number; column: number }): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
-  for (const block of topBlocks(doc)) {
-    const lang = /^code:(.*)$/.exec(block.type)?.[1]?.toLowerCase();
-    if (!lang) continue;
-    const source = doc.body.slice(block.start, block.end).replace(/^```[^\n]*\n?/, "").replace(/\n?```\s*$/, "");
+  for (const { block, lang, meta, source } of topCodeFences(doc)) {
+    const trimmedMeta = meta.trim();
+    if (trimmedMeta && !/^\{#[A-Za-z][\w-]*\}$/.test(trimmedMeta)) {
+      const malformedName = /\{#([^}]*)\}/.exec(trimmedMeta);
+      diagnostics.push({
+        ...at(block.start), severity: "warning",
+        code: malformedName && !/^[A-Za-z][\w-]*$/.test(malformedName[1]!) ? "block-name-malformed" : "fence-metadata-unsupported",
+        message: malformedName && !/^[A-Za-z][\w-]*$/.test(malformedName[1]!)
+          ? `\`{#${malformedName[1]!}}\` is not a usable block name, so this fence stays positional.`
+          : `Fence metadata \`${trimmedMeta}\` is unsupported; only one optional \`{#name}\` is recognized.`,
+        hint: "Use one name that starts with a letter and contains only letters, numbers, `_` or `-`.",
+      });
+    }
     if (lang === "explainer") {
       try { renderExplainer(source); }
       catch (error) {
@@ -205,7 +205,7 @@ function checkFences(doc: Doc, at: (offset: number) => { line: number; column: n
           hint: "Run `myd guide explainers` for the supported section types and their required fields.",
         });
       }
-    } else if (VEGA_LANGS.has(lang)) {
+    } else if (richFenceKind(lang) === "vega") {
       try { JSON.parse(source); }
       catch (error) {
         diagnostics.push({
@@ -222,21 +222,35 @@ function checkFences(doc: Doc, at: (offset: number) => { line: number; column: n
 function checkReferences(doc: Doc, at: (offset: number) => { line: number; column: number }): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   const dir = path.dirname(doc.path);
-  const fences = codeRanges(doc.clean);
-  const LINK = /(!?)\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
-  for (const match of doc.clean.matchAll(LINK)) {
-    const target = match[2]!;
-    if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(target)) continue; // absolute, protocol-relative, in-page
-    if (insideFence(fences, match.index!)) continue;
-    const resolved = path.resolve(dir, decodeURIComponent(target.split("#")[0]!));
-    if (!resolved || fs.existsSync(resolved)) continue;
+  const tree: any = unified().use(remarkParse).use(remarkFrontmatter, ["yaml"]).use(remarkGfm).use(remarkMath).parse(doc.clean);
+  const definitions = new Map<string, string>();
+  visit(tree, "definition", (node: any) => {
+    definitions.set(String(node.identifier).toLowerCase(), String(node.url));
+  });
+  visit(tree, (node: any) => {
+    let target: string | undefined;
+    let image = false;
+    if (node.type === "link" || node.type === "image") {
+      target = String(node.url);
+      image = node.type === "image";
+    } else if (node.type === "linkReference" || node.type === "imageReference") {
+      target = definitions.get(String(node.identifier).toLowerCase());
+      image = node.type === "imageReference";
+    }
+    if (!target || !node.position) return;
+    if (/^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(target)) return; // absolute, protocol-relative, in-page
+    let decoded: string;
+    try { decoded = decodeURIComponent(target.split(/[?#]/)[0]!); }
+    catch { decoded = target.split(/[?#]/)[0]!; }
+    const resolved = path.resolve(dir, decoded);
+    if (!resolved || fs.existsSync(resolved)) return;
     diagnostics.push({
-      ...at(doc.cleanToOrig(match.index!)),
+      ...at(doc.cleanToOrig(node.position.start.offset)),
       severity: "warning",
-      code: match[1] ? "local-image-missing" : "local-reference-missing",
-      message: `${match[1] ? "Image" : "Link"} target \`${target}\` does not exist relative to this document.`,
+      code: image ? "local-image-missing" : "local-reference-missing",
+      message: `${image ? "Image" : "Link"} target \`${target}\` does not exist relative to this document.`,
     });
-  }
+  });
   return diagnostics;
 }
 
@@ -259,8 +273,8 @@ function isDiagramFault(error: unknown): boolean {
 }
 
 async function checkMermaid(doc: Doc, at: (offset: number) => { line: number; column: number }): Promise<{ diagnostics: Diagnostic[]; state: CheckReport["mermaid"] }> {
-  const blocks = topBlocks(doc).filter((block) => block.type.toLowerCase() === "code:mermaid");
-  if (!blocks.length) return { diagnostics: [], state: "none" };
+  const fences = topCodeFences(doc).filter((fence) => fence.lang === "mermaid");
+  if (!fences.length) return { diagnostics: [], state: "none" };
   let parse: (source: string) => unknown;
   try {
     const mod: any = await import("mermaid");
@@ -272,8 +286,7 @@ async function checkMermaid(doc: Doc, at: (offset: number) => { line: number; co
   }
   const diagnostics: Diagnostic[] = [];
   let degraded = false;
-  for (const block of blocks) {
-    const source = doc.body.slice(block.start, block.end).replace(/^```[^\n]*\n?/, "").replace(/\n?```\s*$/, "");
+  for (const { block, source } of fences) {
     try { await parse(source); }
     catch (error) {
       if (!isDiagramFault(error)) { degraded = true; continue; }
@@ -318,14 +331,22 @@ export async function checkDocument(file: string, options: { mermaid?: boolean }
     }
     try { listSemanticObjects(doc); }
     catch (error) {
-      diagnostics.push({ line: 1, column: 1, severity: "error", code: "objects-unlistable", message: `Semantic objects could not be listed: ${error instanceof Error ? error.message : String(error)}` });
+      const message = error instanceof Error ? error.message : String(error);
+      const blockId = /reference:\s*([^›\s]+)›/.exec(message)?.[1];
+      const explainerFences = topCodeFences(doc).filter((fence) => fence.lang === "explainer");
+      const fence = blockId ? explainerFences.filter((candidate) => candidate.block.id === blockId).at(-1) : explainerFences[0];
+      diagnostics.push({
+        ...(fence ? at(fence.block.start) : { line: 1, column: 1 }),
+        severity: "error", code: "objects-unlistable", message: `Semantic objects could not be listed: ${message}`,
+      });
     }
     try {
-      const html = await renderForCheck(doc.clean);
-      for (const marker of ERROR_MARKERS) {
-        if (html.includes(marker.needle)) {
-          diagnostics.push({ line: 1, column: 1, severity: "error", code: marker.code, message: `Server-side rendering produced an error block: ${marker.what}.` });
-        }
+      const rendered = await renderForCheck(doc.clean);
+      for (const issue of rendered.issues) {
+        diagnostics.push({
+          ...at(doc.cleanToOrig(issue.offset)),
+          severity: "error", code: issue.code, message: `Server-side rendering produced an error block: ${issue.message}`,
+        });
       }
     } catch (error) {
       diagnostics.push({ line: 1, column: 1, severity: "error", code: "render-failed", message: `Server-side rendering threw: ${error instanceof Error ? error.message : String(error)}` });

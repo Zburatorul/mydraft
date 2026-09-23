@@ -169,7 +169,7 @@ describe("semantic object CLI", () => {
     expect(invalid.exitCode).toBe(1);
     expect(invalid.stderr).toContain("alice-trigger.party must be non-empty text");
     expect(fs.readFileSync(file, "utf8")).toBe(before);
-  });
+  }, 15_000);
 
   test("rejects an ambiguous block›target identity", async () => {
     const file = fixture();

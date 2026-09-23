@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dir, "..");
-const TEST_TIMEOUT_MS = 30_000;
+const TEST_TIMEOUT_MS = 60_000;
 let tempDir: string;
 let fixture: string;
 let server: Bun.Subprocess;

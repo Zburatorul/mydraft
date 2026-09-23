@@ -1,7 +1,7 @@
 import { isMap, isSeq, parseDocument, type Node, type YAMLMap } from "yaml";
 import { loadDoc, type Doc } from "./doc.ts";
 import { explainerSectionChildren, renderExplainer } from "./explainer.ts";
-import { topBlocks, type Block } from "./render.ts";
+import { topCodeFences, type CodeFence } from "./render.ts";
 
 export type SemanticObject = {
   ref: string;
@@ -22,23 +22,7 @@ type LocatedSourceObject = ExplainerSourceObject & {
 
 type LocatedObject = SemanticObject & Pick<LocatedSourceObject, "start" | "end" | "indent">;
 
-type ExplainerFence = {
-  block: Block;
-  source: string;
-  sourceStart: number;
-};
-
-function explainerFence(doc: Doc, block: Block): ExplainerFence {
-  const fenced = doc.body.slice(block.start, block.end);
-  const firstNewline = fenced.indexOf("\n");
-  const lastNewline = fenced.lastIndexOf("\n");
-  if (firstNewline < 0 || lastNewline <= firstNewline) throw new Error(`invalid explainer fence: ${block.id}`);
-  return {
-    block,
-    source: fenced.slice(firstNewline + 1, lastNewline),
-    sourceStart: block.start + firstNewline + 1,
-  };
-}
+type ExplainerFence = CodeFence;
 
 function pathText(parts: Array<string | number>): string {
   return parts.map((part, index) => typeof part === "number" ? `[${part}]` : `${index ? "." : ""}${part}`).join("");
@@ -110,9 +94,9 @@ function objectsInFence(fence: ExplainerFence): LocatedObject[] {
 }
 
 function locatedObjects(doc: Doc): LocatedObject[] {
-  const objects = topBlocks(doc)
-    .filter((block) => block.type === "code:explainer")
-    .flatMap((block) => objectsInFence(explainerFence(doc, block)));
+  const objects = topCodeFences(doc)
+    .filter((fence) => fence.lang === "explainer")
+    .flatMap(objectsInFence);
   const refs = new Set<string>();
   for (const object of objects) {
     if (refs.has(object.ref)) throw new Error(`ambiguous semantic object reference: ${object.ref}`);
