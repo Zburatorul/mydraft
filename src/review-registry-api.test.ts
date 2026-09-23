@@ -61,7 +61,8 @@ async function openReviewSocket(reviewId: string) {
 async function runView(doc: string, session: string) {
   const env: Record<string, string> = { ...process.env as Record<string, string>, MYD_HOME: path.join(tempDir, "state"), MYD_NO_OPEN: "1", MYD_SESSION: session };
   delete env.CLAUDE_CODE_SESSION_ID;
-  const cli = Bun.spawn([process.execPath, path.join(ROOT, "src/cli.ts"), "view", doc, "--json", "--no-open"], { cwd: ROOT, env, stdout: "pipe", stderr: "pipe" });
+  // These tests exercise registry lifecycle, not the structural gate (covered in check.test.ts).
+  const cli = Bun.spawn([process.execPath, path.join(ROOT, "src/cli.ts"), "view", doc, "--json", "--no-open", "--skip-check"], { cwd: ROOT, env, stdout: "pipe", stderr: "pipe" });
   const output = await new Response(cli.stdout).text();
   expect(await cli.exited).toBe(0);
   return JSON.parse(output) as { url: string; reviewId: string };

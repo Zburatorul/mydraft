@@ -210,5 +210,5 @@ describe("the CLI entry points", () => {
       expect(result.exitCode).toBe(0);
       expect(result.stdout.trim()).toStartWith(`## ${topic}`);
     }
-  });
+  }, 15000); // Exercises every advertised topic through a fresh CLI process.
 });

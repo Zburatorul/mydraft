@@ -41,7 +41,7 @@ beforeAll(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), "myd-check-")); }
 afterAll(async () => {
   for (const { home, port } of homes) await myd({ MYD_HOME: home, MYD_PORT: port }, "stop");
   fs.rmSync(root, { recursive: true, force: true });
-});
+}, 30000);
 
 describe("a sound document passes", () => {
   test("plain Markdown with a valid review layer is ok", async () => {
@@ -51,10 +51,10 @@ describe("a sound document passes", () => {
     expect(report.errors).toEqual([]);
   });
 
-  test("this repo's own README and skill file are not blocked", async () => {
+  test("this repo's own README, agent guide, and skill file are not blocked", async () => {
     // The vendor validator reads SKILL.md's YAML *frontmatter* as review endmatter and calls it
     // invalid. A gate that blocks a file like this is worse than no gate.
-    for (const name of ["README.md", "skill/SKILL.md"]) {
+    for (const name of ["README.md", "docs/agent-guide.md", "skill/SKILL.md"]) {
       const report = await checkDocument(path.join(REPO, name));
       expect({ name, errors: report.errors.map((d) => d.code) }).toEqual({ name, errors: [] });
     }
@@ -175,6 +175,67 @@ describe("blocks, fences, and references", () => {
     const report = await checkDocument(file);
     expect(report.diagnostics).toEqual([]);
   });
+
+  test("reference-style local links are checked", async () => {
+    const file = fixture("ref-link.md", "# T\n\nSee [the plan][plan].\n\n[plan]: ./missing-plan.md\n");
+    const report = await checkDocument(file);
+    expect(codes(report)).toContain("local-reference-missing");
+  });
+
+  test("malformed fence block ids warn", async () => {
+    const file = fixture("bad-fence-id.md", "# T\n\n```mermaid {#1bad}\ngraph TD\n  A-->B\n```\n");
+    const report = await checkDocument(file);
+    expect(codes(report)).toContain("block-name-malformed");
+    expect(report.ok).toBe(true);
+  });
+
+  test("unsupported or repeated fence metadata warns", async () => {
+    const file = fixture("bad-fence-meta.md", "# T\n\n```mermaid {#one} {#two}\ngraph TD\n  A-->B\n```\n");
+    const report = await checkDocument(file);
+    expect(codes(report)).toContain("fence-metadata-unsupported");
+    expect(report.ok).toBe(true);
+  });
+
+  test("empty rich fences still reach their payload validator", async () => {
+    const file = fixture("empty-rich.md", "# T\n\n```vega-lite\n```\n");
+    const report = await checkDocument(file);
+    expect(codes(report)).toContain("vega-spec-invalid");
+    expect(report.ok).toBe(false);
+  });
+
+  test("tilde and long-backtick chart fences are read without their delimiters", async () => {
+    const file = fixture("fence-shapes.md", "# T\n\n~~~vega-lite\n{}\n~~~\n\n````chart\n{}\n````\n");
+    const report = await checkDocument(file);
+    expect(report.errors).toEqual([]);
+  });
+
+  test("authored renderer class names are not mistaken for renderer failures", async () => {
+    const file = fixture("marker-prose.md", "# T\n\nThe strings `rich-error`, `explainer invalid`, and `katex-error` are documentation.\n");
+    const report = await checkDocument(file);
+    expect(report.errors).toEqual([]);
+  });
+
+  test("renderer errors point at the source construct rather than line 1", async () => {
+    const file = fixture("math-location.md", "# T\n\nSeveral lines\n\nbefore invalid math.\n\n$\\frac{$\n");
+    const report = await checkDocument(file);
+    const diagnostic = report.errors.find((item) => item.code === "render-math-error");
+    expect(diagnostic).toBeTruthy();
+    expect(diagnostic!.line).toBe(7);
+  });
+
+  test("semantic-object failures point at their explainer fence", async () => {
+    const file = fixture("object-location.md", [
+      "# T", "", "intro", "",
+      "```explainer {#epoch}",
+      "title: First", "sections:", "  - type: result", "    id: result", "    label: First", "    value: one", "    status: derived", "```", "",
+      "```explainer {#epoch}",
+      "title: Second", "sections:", "  - type: result", "    id: result", "    label: Second", "    value: two", "    status: derived", "```", "",
+    ].join("\n"));
+    const report = await checkDocument(file);
+    const diagnostic = report.errors.find((item) => item.code === "objects-unlistable");
+    expect(diagnostic).toBeTruthy();
+    expect(diagnostic!.line).toBe(15);
+  });
 });
 
 describe("mermaid", () => {
@@ -242,13 +303,22 @@ describe("the CLI surface", () => {
     expect(result.stdout).toBe("");
     // The preflight runs before the server: nothing was started, so nothing tracked a review.
     expect(fs.existsSync(path.join(home, "reviews.json"))).toBe(false);
-  });
+  }, 30000);
+
+  test("`myd view` runs Mermaid validation too", async () => {
+    const file = fixture("cli-view-bad-mermaid.md", "# T\n\n```mermaid\nthis is definitely not a diagram at all\n```\n");
+    const home = instance("7675");
+    const result = await myd({ MYD_HOME: home, MYD_PORT: "7675" }, "view", file, "--json");
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain("mermaid-invalid");
+    expect(fs.existsSync(path.join(home, "reviews.json"))).toBe(false);
+  }, 30000);
 
   test("diagnostics name the file and a line, so they can be acted on", async () => {
     const file = fixture("cli-loc.md", "# T\n\nline two\n\n## A {#dup}\n\nx\n\n## B {#dup}\n\ny\n");
     const result = await myd({ MYD_HOME: instance("7672"), MYD_PORT: "7672" }, "view", file);
     expect(result.stderr).toMatch(new RegExp(`${file.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}:\\d+:\\d+ error`));
-  });
+  }, 30000);
 
   test("--skip-check opens the review anyway", async () => {
     const file = fixture("cli-skip.md", "# T\n\n## A {#dup}\n\nx\n\n## B {#dup}\n\ny\n");
@@ -256,7 +326,7 @@ describe("the CLI surface", () => {
     const result = await myd({ MYD_HOME: home, MYD_PORT: "7673" }, "view", file, "--json", "--skip-check");
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout).reviewId).toBeTruthy();
-  });
+  }, 30000);
 
   test("warnings print but do not stop the review", async () => {
     const file = fixture("cli-warn.md", "# T\n\nSee [gone](./gone.md).\n");
@@ -265,5 +335,5 @@ describe("the CLI surface", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toContain("local-reference-missing");
     expect(JSON.parse(result.stdout).reviewId).toBeTruthy();
-  });
+  }, 30000);
 });

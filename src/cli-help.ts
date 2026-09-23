@@ -54,7 +54,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
       ]],
       ["Preflight", [
         "`myd check` runs first, before the server starts. Structural errors print with file and line and exit 2 without creating a review; warnings print and the review opens anyway.",
-        "Mermaid fences are not parsed here — run `myd check` for that. Use --skip-check to open regardless.",
+        "Mermaid is parsed when the document contains a diagram. Use --skip-check to open regardless.",
       ]],
       ["Browser", [
         "Opening a browser is best-effort. A headless host still creates the review, prints the URL, warns on stderr and exits 0; --json reports browserOpened and, on failure, browserError.",
@@ -138,9 +138,9 @@ export const COMMANDS: Record<string, CommandHelp> = {
       "Answers one question: will this document open as a coherent review? It parses the Markdown and\n" +
       "the review endmatter, checks annotation, block and object ids, validates explainer and chart\n" +
       "fences, renders server-side and looks for error blocks, and resolves local references.\n" +
-      "`myd view` runs this same check first, minus Mermaid.",
+      "`myd view` runs this same check first.",
     args: [["<file.md>", "the document to validate"]],
-    flags: [["--no-mermaid", "skip parsing Mermaid fences (what the myd view preflight does)"], JSON_FLAG],
+    flags: [["--no-mermaid", "skip parsing Mermaid fences for this explicit check"], JSON_FLAG],
     sections: [
       ["Exit codes", [
         "0 when there are no errors, even if there are warnings.",
@@ -149,7 +149,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
       ["What it cannot see", [
         "This is a structural preflight, not a rendering check: typography, responsive layout, client-side interaction, clipping, overlap and final pixels are all invisible to it.",
         "`myd shot` renders the document in headless Chrome and is the stronger visual check.",
-        "Mermaid is parsed here but not in the `myd view` preflight — loading the parser costs about ten times the rest of the check.",
+        "Mermaid is parsed only when the document contains a Mermaid fence, so other documents do not load the parser.",
       ]],
     ],
     example: ["myd check plans/roadmap.md --json"],

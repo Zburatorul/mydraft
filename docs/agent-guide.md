@@ -5,7 +5,7 @@ the human reads a rich rendering and annotates it; annotations are written back 
 Roughdraft-flavored CriticMarkup + YAML endmatter at exact source offsets; the agent reads/edits the
 file with the CLI. Everything below is discoverable via `myd guide <topic>`; for one command's flags, guards and an example, use `myd help <command>` (or `myd <command> --help`).
 
-`myd view` runs a browserless structural check before it opens anything: unparsable Markdown or review endmatter, duplicate annotation/block ids, an invalid explainer or chart fence, or a document that renders an error block stops the command with a file:line diagnostic and exit 2, and no review is created. Warnings — a missing local link, a malformed block name — print and the review opens anyway. `myd check FILE [--json]` runs the same check on demand and additionally parses Mermaid; `myd view --skip-check` opts out. It is a structural preflight only: typography, layout, clipping and client-side rendering are invisible to it, which is what `myd shot` is for.
+`myd view` runs a browserless structural check before it opens anything: unparsable Markdown or review endmatter, duplicate annotation/block ids, an invalid Mermaid, explainer, or chart fence, or a document that renders an error block stops the command with a file:line diagnostic and exit 2, and no review is created. Warnings — a missing local link, a malformed block name — print and the review opens anyway. `myd check FILE [--json]` runs the same check on demand; `myd view --skip-check` opts out. It is a structural preflight only: typography, layout, clipping and client-side rendering are invisible to it, which is what `myd shot` is for.
 
 Topics: `workflow` · `blocks` · `objects` · `explainers` · `rich` · `criticmarkup` · `export` · `api`
 
@@ -119,18 +119,18 @@ Every rich block has a "source" toggle. Prefer these over ASCII diagrams/tables.
 
 ## criticmarkup — the on-disk format (Roughdraft-compatible)
 
-```markdown
-Text with {==an anchored==}{>>comment<<}{#c1} and a {~~typo~>fix~~}{#s1}.
-{>>block-level comment placed after a fence<<}{#c2}
+ ````markdown
+ Text with {==an anchored==}{>>comment<<}{#c1} and a {~~typo~>fix~~}{#s1}.
+ {>>block-level comment placed after a fence<<}{#c2}
 
----
-comments:
-  c1: {by: user, at: "2026-08-16T01:00:00Z"}
-  c2: {by: user, at: "…", anchor: {block: flow, target: "node:Viewer"}}
-  c3: {body: "reply text", by: AI, at: "…", re: c1, status: resolved}
-suggestions:
-  s1: {by: user, at: "…"}
-```
+ ---
+ comments:
+   c1: {by: user, at: "2026-08-16T01:00:00Z"}
+   c2: {by: user, at: "…", anchor: {block: flow, target: "node:Viewer"}}
+   c3: {body: "reply text", by: AI, at: "…", re: c1, status: resolved}
+ suggestions:
+   s1: {by: user, at: "…"}
+ ````
 
 Markers: `{==x==}` highlight · `{>>c<<}` comment · `{++x++}` insertion · `{--x--}` deletion · `{~~a~>b~~}` substitution · `{#cN}`/`{#sN}` id ref. CriticMarkup inside fenced code is literal. Use `myd reply/resolve` rather than hand-editing endmatter; if you must hand-edit, keep ids unique and `roughdraft doctor FILE` (if installed) still passing.
 

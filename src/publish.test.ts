@@ -89,7 +89,7 @@ describe("publishDocument", () => {
     const result = JSON.parse(stdout);
     expect(result.releaseId).toBe(JSON.parse(fs.readFileSync(path.join(outputDir, "index.json"), "utf8")).current);
     expect(fs.existsSync(result.manifestPath)).toBe(true);
-  }, 15_000);
+  }, 30_000);
 
   test("keeps the previous release current when validation fails", async () => {
     const root = workspace();

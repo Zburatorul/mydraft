@@ -19,7 +19,18 @@ import type { Root as HastRoot, Element } from "hast";
 import { hashVersion, type Doc } from "./doc.ts";
 import { renderExplainer } from "./explainer.ts";
 
-const RICH = new Set(["mermaid", "vega-lite", "vega", "chart", "html", "explainer"]);
+export type RichFenceKind = "mermaid" | "vega" | "html" | "explainer";
+const RICH_FENCE_KINDS: Record<string, RichFenceKind> = {
+  mermaid: "mermaid",
+  "vega-lite": "vega",
+  vega: "vega",
+  chart: "vega",
+  html: "html",
+  explainer: "explainer",
+};
+export function richFenceKind(lang: string): RichFenceKind | null {
+  return RICH_FENCE_KINDS[lang.toLowerCase()] ?? null;
+}
 
 /** mdast plugin: stash source offsets on every node's data.hProperties so they survive to hast. */
 function remarkPositions() {
@@ -41,24 +52,63 @@ function remarkPositions() {
 }
 
 /** mdast plugin: turn rich fences into html nodes with the source escaped inside. */
-function remarkRichFences() {
-  return (tree: MdRoot) => {
+type RenderIssue = { code: "render-error-block" | "render-math-error"; message: string; offset: number };
+
+function addRenderIssue(file: any, issue: RenderIssue) {
+  const issues = ((file.data ??= {}).mydRenderIssues ??= []) as RenderIssue[];
+  issues.push(issue);
+}
+
+function remarkRichFences(options: { collectIssues: boolean }) {
+  const { collectIssues } = options;
+  return (tree: MdRoot, file: any) => {
     visit(tree, "code", (node: any, index, parent: any) => {
       const lang = (node.lang ?? "").toLowerCase();
-      if (!RICH.has(lang) || !parent || index === undefined) return;
+      const kind = richFenceKind(lang);
+      if (!kind || !parent || index === undefined) return;
       const pos = node.position ? `${node.position.start.offset}-${node.position.end.offset}` : "";
       const bid = node.data?.hProperties?.["data-bid"] ?? "";
       const src = escapeHtml(node.value);
       let html: string;
-      if (lang === "mermaid") html = `<div class="rich mermaid" data-pos="${pos}" data-bid="${bid}" data-lang="mermaid"><pre class="rich-src">${src}</pre></div>`;
-      else if (lang === "html") html = `<div class="rich island" data-pos="${pos}" data-bid="${bid}" data-lang="html"><pre class="rich-src">${src}</pre></div>`;
-      else if (lang === "explainer") {
+      if (kind === "mermaid") html = `<div class="rich mermaid" data-pos="${pos}" data-bid="${bid}" data-lang="mermaid"><pre class="rich-src">${src}</pre></div>`;
+      else if (kind === "html") html = `<div class="rich island" data-pos="${pos}" data-bid="${bid}" data-lang="html"><pre class="rich-src">${src}</pre></div>`;
+      else if (kind === "explainer") {
         try { html = `<div class="rich explainer" data-pos="${pos}" data-bid="${bid}" data-lang="explainer"><pre class="rich-src">${src}</pre><div class="rich-view">${renderExplainer(node.value)}</div></div>`; }
-        catch (error) { html = `<div class="rich explainer invalid" data-pos="${pos}" data-bid="${bid}" data-lang="explainer"><pre class="rich-src">${src}</pre><div class="rich-error">Explainer: ${escapeHtml(error instanceof Error ? error.message : String(error))}</div></div>`; }
+        catch (error) {
+          const message = `Explainer: ${error instanceof Error ? error.message : String(error)}`;
+          if (collectIssues) addRenderIssue(file, { code: "render-error-block", message, offset: node.position?.start.offset ?? 0 });
+          html = `<div class="rich explainer invalid" data-pos="${pos}" data-bid="${bid}" data-lang="explainer"><pre class="rich-src">${src}</pre><div class="rich-error">${escapeHtml(message)}</div></div>`;
+        }
       }
       else html = `<div class="rich vega" data-pos="${pos}" data-bid="${bid}" data-lang="${lang}"><pre class="rich-src">${src}</pre></div>`;
       parent.children[index] = { type: "html", value: html };
     });
+  };
+}
+
+/** Collect renderer-produced KaTeX errors without scanning arbitrary authored text in the HTML. */
+function rehypeRenderIssues() {
+  return (tree: HastRoot, file: any) => {
+    const walk = (node: any, inheritedOffset = 0) => {
+      const position = String(node.properties?.dataPos ?? node.properties?.["data-pos"] ?? "");
+      const offset = Number(/^\d+/.exec(position)?.[0] ?? inheritedOffset);
+      if (node.type !== "element") {
+        for (const child of node.children ?? []) walk(child, offset);
+        return;
+      }
+      const classes = Array.isArray(node.properties?.className)
+        ? node.properties.className.map(String)
+        : String(node.properties?.className ?? "").split(/\s+/);
+      if (classes.includes("katex-error")) {
+        addRenderIssue(file, {
+          code: "render-math-error",
+          message: String(node.properties?.title ?? "KaTeX rendered an error"),
+          offset,
+        });
+      }
+      for (const child of node.children ?? []) walk(child, offset);
+    };
+    walk(tree);
   };
 }
 
@@ -84,18 +134,19 @@ function rehypeCallouts() {
   };
 }
 
-function buildProcessor(highlight: boolean) {
+function buildProcessor(highlight: boolean, collectIssues = false) {
   const p = unified()
     .use(remarkParse)
     .use(remarkFrontmatter, ["yaml"])
     .use(remarkGfm)
     .use(remarkMath)
     .use(remarkPositions)
-    .use(remarkRichFences)
+    .use(remarkRichFences, { collectIssues })
     .use(remarkRehype, { allowDangerousHtml: true })
     .use(rehypeRaw)
     .use(rehypeCallouts)
     .use(rehypeKatex);
+  if (collectIssues) p.use(rehypeRenderIssues);
   if (highlight) p.use(rehypeShiki, { themes: { light: "github-light", dark: "github-dark" }, defaultColor: false });
   return p.use(rehypeStringify) as any;
 }
@@ -115,12 +166,14 @@ function getProcessor() {
  * for everything else, and highlighting cannot fail into an error block (an unknown language falls
  * back to plain text). Dropping it buys the whole check for a rounding error on review startup.
  */
-export async function renderForCheck(clean: string): Promise<string> {
-  checkProcessor ??= buildProcessor(false);
-  return String(await (checkProcessor as any).process(clean));
+export async function renderForCheck(clean: string): Promise<{ html: string; issues: RenderIssue[] }> {
+  checkProcessor ??= buildProcessor(false, true);
+  const file = await (checkProcessor as any).process(clean);
+  return { html: String(file), issues: ((file.data?.mydRenderIssues ?? []) as RenderIssue[]) };
 }
 
 export type Block = { id: string; index: number; name: string | null; type: string; start: number; end: number; head: string; guard: string };
+export type CodeFence = { block: Block; lang: string; meta: string; source: string; sourceStart: number };
 /** Top-level blocks of doc.body with ORIGINAL offsets (via clean→orig map), ids b0..bn matching data-bid. */
 /** Optional stable name for a block: heading `## Title {#name}`, or fence info string ```` ```mermaid {#name} ````. */
 export function blockName(c: any, clean: string): string | null {
@@ -128,14 +181,36 @@ export function blockName(c: any, clean: string): string | null {
   if (c.type === "code") { const m = /\{#([A-Za-z][\w-]*)\}/.exec(c.meta ?? ""); return m ? m[1]! : null; }
   return null;
 }
-export function topBlocks(doc: Doc): Block[] {
+function parsedTopBlocks(doc: Doc): Array<{ node: any; block: Block }> {
   const tree = unified().use(remarkParse).use(remarkFrontmatter, ["yaml"]).use(remarkGfm).use(remarkMath).parse(doc.clean) as MdRoot;
   return tree.children.map((c: any, i) => {
     const s = doc.cleanToOrig(c.position.start.offset), e = doc.cleanToOrig(c.position.end.offset);
     const type = c.type === "heading" ? `h${c.depth}` : c.type === "code" ? `code:${c.lang ?? ""}` : c.type === "paragraph" ? "para" : c.type;
     const name = blockName(c, doc.clean);
     const id = name ?? `b${i}`;
-    return { id, index: i, name, type, start: s, end: e, head: doc.body.slice(s, e).split("\n")[0]!.slice(0, 80), guard: hashVersion(`${doc.version}\0${id}`) };
+    return { node: c, block: { id, index: i, name, type, start: s, end: e, head: doc.body.slice(s, e).split("\n")[0]!.slice(0, 80), guard: hashVersion(`${doc.version}\0${id}`) } };
+  });
+}
+
+export function topBlocks(doc: Doc): Block[] {
+  return parsedTopBlocks(doc).map(({ block }) => block);
+}
+
+/** Parsed top-level fences, with delimiters removed for every CommonMark fence style. */
+export function topCodeFences(doc: Doc): CodeFence[] {
+  return parsedTopBlocks(doc).flatMap(({ node, block }) => {
+    if (node.type !== "code" || !node.lang) return [];
+    const fenced = doc.body.slice(block.start, block.end);
+    const firstNewline = fenced.indexOf("\n");
+    const lastNewline = fenced.lastIndexOf("\n");
+    if (firstNewline < 0 || lastNewline < firstNewline) return [];
+    return [{
+      block,
+      lang: String(node.lang).toLowerCase(),
+      meta: String(node.meta ?? ""),
+      source: fenced.slice(firstNewline + 1, lastNewline),
+      sourceStart: block.start + firstNewline + 1,
+    }];
   });
 }
 
