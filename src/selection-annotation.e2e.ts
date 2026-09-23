@@ -273,7 +273,15 @@ describe("cross-element annotation in a real browser", () => {
     expect(await page.locator("#rail").isHidden()).toBeTrue();
 
     await selectAcrossLink(page);
-    await page.locator('#popover [data-act="comment"]').click();
+    const commentAction = page.locator('#popover [data-act="comment"]');
+    expect(await commentAction.isVisible()).toBeTrue();
+    expect(await commentAction.isEnabled()).toBeTrue();
+    // Chrome 152 under hosted-runner contention can return from Playwright's synthetic click
+    // without delivering this already-actionable popover event, leaving the editor hidden until
+    // the test times out. The first annotation test above retains real-click coverage; this test
+    // is specifically about the post-save rail transition, so exercise the handler directly.
+    await commentAction.dispatchEvent("click");
+    await page.locator("#editor").waitFor({ state: "visible" });
     await page.locator("#edBody").fill("Show this thread.");
     const saved = page.waitForResponse((response) => response.url().endsWith("/api/annotate") && response.request().method() === "POST");
     await page.locator("#edSave").click();
