@@ -13,6 +13,7 @@
   <span id="status"></span>
   <span id="reviewState" role="status" aria-live="polite" hidden></span>
   <span class="spacer"></span>
+  <button id="changesBtn" type="button" aria-haspopup="dialog" hidden>± Changes</button>
   <button id="railToggle" class="rail-toggle" type="button" aria-controls="rail" aria-expanded="true" aria-label="Hide comments">
     <span aria-hidden="true">💬</span><span data-rail-label>Hide comments</span>
   </button>
@@ -44,6 +45,26 @@
     <div class="hint">Ctrl+Enter or Command+Enter to submit</div>
     <menu><button value="cancel">Cancel</button><button value="ok" class="primary">Done Reviewing</button></menu>
   </form>
+</dialog>
+<dialog id="changesDlg" aria-labelledby="changesTitle">
+  <header class="dialog-header">
+    <div><strong id="changesTitle">Changes</strong><div id="changesMeta" class="muted"></div></div>
+    <button id="changesClose" type="button" aria-label="Close changes">Close</button>
+  </header>
+  <div id="changesBody" class="revision-diff" aria-live="polite"></div>
+</dialog>
+<dialog id="diagramDlg" class="diagram-dialog" aria-label="Diagram viewer">
+  <header class="dialog-header diagram-toolbar">
+    <strong>Diagram</strong>
+    <span class="spacer"></span>
+    <button id="diagramZoomOut" type="button" aria-label="Zoom out">−</button>
+    <button id="diagramReset" type="button" aria-label="Reset zoom">100%</button>
+    <button id="diagramZoomIn" type="button" aria-label="Zoom in">+</button>
+    <button id="diagramClose" type="button" aria-label="Close diagram">Close</button>
+  </header>
+  <div id="diagramViewport" class="diagram-viewport" tabindex="0">
+    <div id="diagramStage" class="diagram-stage" data-scale="1"></div>
+  </div>
 </dialog>
 <script type="module" src="/web/app.js"></script>
 </body>
