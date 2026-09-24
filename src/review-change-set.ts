@@ -19,6 +19,7 @@ export type ReviewChange = {
   insertBeforeBlockId: string | null;
   summary: string;
   priorItemIds: string[];
+  contextItemIds?: string[];
   semanticChanges: ExplainerChange[];
 };
 
@@ -122,12 +123,14 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
   const afterContentKeys = after.map((candidate) => hashVersion(candidate.source).slice(0, 12));
   const beforeMatch = new Map<number, number>();
   const afterMatch = new Map<number, number>();
+  const contextualBeforeMatches = new Set<number>();
 
-  const pair = (beforeIndex: number, afterIndex: number) => {
+  const pair = (beforeIndex: number, afterIndex: number, contextual = false) => {
     beforeMatch.set(beforeIndex, afterIndex);
     afterMatch.set(afterIndex, beforeIndex);
+    if (contextual) contextualBeforeMatches.add(beforeIndex);
   };
-  const pairSimilar = (beforeIndices: number[], afterIndices: number[]) => {
+  const pairSimilar = (beforeIndices: number[], afterIndices: number[], contextual = false) => {
     const candidates = beforeIndices.flatMap((beforeIndex) => afterIndices.map((afterIndex) => ({
       beforeIndex,
       afterIndex,
@@ -143,7 +146,7 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
         && other.beforeIndex !== candidate.beforeIndex
         && !beforeMatch.has(other.beforeIndex)
         && other.score >= candidate.score - .05);
-      if (!ambiguousBefore && !ambiguousAfter) pair(candidate.beforeIndex, candidate.afterIndex);
+      if (!ambiguousBefore && !ambiguousAfter) pair(candidate.beforeIndex, candidate.afterIndex, contextual);
     }
   };
 
@@ -210,7 +213,7 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
     const afterIndices = afterHeadingGroups.get(key) ?? [];
     if (beforeIndices.length === 1 && afterIndices.length === 1
       && before[beforeIndices[0]!]!.block.type === after[afterIndices[0]!]!.block.type) {
-      pair(beforeIndices[0]!, afterIndices[0]!);
+      pair(beforeIndices[0]!, afterIndices[0]!, true);
     }
   }
 
@@ -226,7 +229,7 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
         && candidate.sectionIndex === beforeHeading && candidate.block.type === type ? [index] : []);
       const afterIndices = after.flatMap((candidate, index) => !afterMatch.has(index) && !candidate.block.name
         && candidate.sectionIndex === afterHeading && candidate.block.type === type ? [index] : []);
-      pairSimilar(beforeIndices, afterIndices);
+      pairSimilar(beforeIndices, afterIndices, contextualBeforeMatches.has(beforeHeading));
     }
   }
 
@@ -236,6 +239,12 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
     const beforeSource = beforeBlockId === null ? null : beforeExplainers.get(beforeBlockId);
     const afterSource = afterBlockId === null ? null : afterExplainers.get(afterBlockId);
     return typeof beforeSource === "string" && typeof afterSource === "string" ? diffExplainers(beforeSource, afterSource) : [];
+  };
+  const feedbackFor = (beforeIndex: number): Pick<ReviewChange, "priorItemIds" | "contextItemIds"> => {
+    const itemIds = itemIdsInBlock(beforeDoc.items, before[beforeIndex]!);
+    return contextualBeforeMatches.has(beforeIndex) && itemIds.length
+      ? { priorItemIds: [], contextItemIds: itemIds }
+      : { priorItemIds: itemIds };
   };
 
   const ordered: Array<{ change: ReviewChange; position: number; tie: number }> = [];
@@ -254,7 +263,7 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
           after: blockView(after[j]!),
           insertBeforeBlockId: null,
           summary: summary(after[j]!),
-          priorItemIds: itemIdsInBlock(beforeDoc.items, before[i]!),
+          ...feedbackFor(i),
           semanticChanges: [],
         }, position: j, tie: j });
       } else unchangedAfterBlockIds.push(after[j]!.block.id);
@@ -267,7 +276,7 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
       after: blockView(after[j]!),
       insertBeforeBlockId: null,
       summary: summary(after[j]!),
-      priorItemIds: itemIdsInBlock(beforeDoc.items, before[i]!),
+      ...feedbackFor(i),
       semanticChanges: semanticFor(before[i]!.block.id, after[j]!.block.id),
     }, position: j, tie: j });
   }

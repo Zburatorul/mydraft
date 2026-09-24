@@ -638,13 +638,13 @@ function selectChange(index, { scroll = true } = {}) {
   $("#changeNext").disabled = selectedChangeIndex === changes.length - 1;
 }
 
-function priorThreadHtml(ids, items) {
+function priorThreadHtml(ids, items, label = "Prior feedback") {
   const byId = new Map(items.map((item) => [item.id, item]));
   return ids.map((id) => {
     const root = byId.get(id);
     if (!root) return "";
     const replies = items.filter((item) => item.parentId === id);
-    return `<details class="prior-thread"><summary>Prior feedback <span class="id">${escape(id)}</span></summary>
+    return `<details class="prior-thread"><summary>${escape(label)} <span class="id">${escape(id)}</span></summary>
       <div class="body">${escape(root.text)}</div>
       ${replies.map((reply) => `<div class="reply"><b>${escape(reply.author ?? "?")}</b> ${escape(reply.text)}</div>`).join("")}
     </details>`;
@@ -765,12 +765,17 @@ function renderChangeCards(data) {
   const changes = data.changeSet.changes;
   $("#changeCards").innerHTML = changes.map((change) => {
     const semantic = change.semanticChanges.map((field) => `${field.id}.${field.field}`).join(", ");
+    const contextItemIds = change.contextItemIds ?? [];
+    const attribution = change.priorItemIds.length
+      ? ` · ${change.priorItemIds.map(escape).join(", ")}`
+      : contextItemIds.length ? " · Other change · prior section context" : " · Other change";
     return `<article class="change-card" data-change-id="${escape(change.id)}">
-      <div class="meta"><span class="change-kind ${change.kind}">${escape(change.kind)}</span>${change.priorItemIds.length ? ` · ${change.priorItemIds.map(escape).join(", ")}` : " · Other change"}</div>
+      <div class="meta"><span class="change-kind ${change.kind}">${escape(change.kind)}</span>${attribution}</div>
       <strong>${escape(change.summary)}</strong>
       ${semantic ? `<div class="semantic-summary">Changed object fields: ${escape(semantic)}</div>` : ""}
       <button class="link change-jump" type="button">Jump to this change</button>
       ${priorThreadHtml(change.priorItemIds, data.priorItems ?? [])}
+      ${priorThreadHtml(contextItemIds, data.priorItems ?? [], "Prior section feedback (not attributed)")}
     </article>`;
   }).join("") || "<p class='muted'>No source changes in this revision.</p>";
   $("#changeCards").querySelectorAll(".change-card").forEach((card, index) => {

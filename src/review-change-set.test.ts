@@ -263,7 +263,22 @@ describe("ReviewChangeSet", () => {
   });
 
   test("a lexically different heading keeps its edited section paired as modifications", () => {
-    const before = "# Doc\n\n## Rollout plan\n\nWe ship the migration on Monday after the freeze ends.\n\n## Risks\n\nNone known.\n";
+    const before = [
+      "# Doc",
+      "",
+      "## Rollout plan",
+      "",
+      "We ship the migration on {==Monday==}{>>Confirm the rollout day.<<}{#c1} after the freeze ends.",
+      "",
+      "## Risks",
+      "",
+      "None known.",
+      "",
+      "---",
+      "comments:",
+      "  c1: {by: user, at: 2026-09-23T18:00:00Z, status: open}",
+      "",
+    ].join("\n");
     const after = "# Doc\n\n## Deployment schedule\n\nWe ship the migration on Tuesday after the freeze ends.\n\n## Risks\n\nNone known.\n";
 
     const changeSet = buildReviewChangeSet({ beforeSource: before, afterSource: after });
@@ -271,6 +286,10 @@ describe("ReviewChangeSet", () => {
       "modified:Deployment schedule",
       "modified:We ship the migration on Tuesday after the freeze ends.",
     ]);
+    expect(changeSet.changes[1]).toMatchObject({
+      priorItemIds: [],
+      contextItemIds: ["c1"],
+    });
     expect(changeSet.unchangedAfterBlockIds).toEqual(["b0", "b3", "b4"]);
   });
 
