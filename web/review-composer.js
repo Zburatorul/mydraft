@@ -20,7 +20,7 @@ function immutableDraft(draft = EMPTY_DRAFT) {
 }
 
 function errorMessage(error) {
-  if (error?.name === "TimeoutError") return "Save timed out. Check your connection and try again.";
+  if (error?.name === "TimeoutError") return "Save timed out. It may have been saved. Reload the document before retrying.";
   return "Could not save. Check your connection and try again.";
 }
 
@@ -48,6 +48,7 @@ export class ReviewComposer {
   get state() { return this.#state; }
 
   open({ kind, target, capturedVersion, draft, returnFocusTo = null }) {
+    if (this.#state.phase === "submitting" || this.hasUnsentDrafts()) return false;
     this.#returnFocusTo = returnFocusTo;
     this.#set({
       phase: "editing",
@@ -58,34 +59,49 @@ export class ReviewComposer {
       error: null,
     });
     this.#focusPrimary(this.#state);
+    return true;
   }
 
   updateDraft(update) {
-    if (this.#state.phase === "idle") return;
-    this.#set({ ...this.#state, draft: immutableDraft({ ...this.#state.draft, ...update }) });
+    if (this.#state.phase === "idle" || this.#state.phase === "submitting") return false;
+    this.#set({ ...this.#state, phase: "editing", draft: immutableDraft({ ...this.#state.draft, ...update }), error: null });
+    return true;
   }
 
   documentChanged({ version }) {
     if (this.#state.phase === "idle" || this.#state.target.capturedVersion === version) return;
-    this.#set({ ...this.#state, targetStatus: "stale", error: null, phase: "editing" });
+    this.#set({ ...this.#state, targetStatus: "stale" });
   }
 
   beginReselect() {
-    if (this.#state.phase === "idle" || this.#state.targetStatus === "current") return;
+    if (this.#state.phase === "idle" || this.#state.phase === "submitting" || this.#state.targetStatus === "current") return false;
     this.#set({ ...this.#state, targetStatus: "reselecting", error: null, phase: "editing" });
+    return true;
   }
 
   retarget({ target, capturedVersion, returnFocusTo = null }) {
-    if (this.#state.phase === "idle") return;
+    if (this.#state.phase === "idle" || this.#state.phase === "submitting") return false;
+    if (this.#state.kind === "suggest" && target.kind !== "text") {
+      this.#set({ ...this.#state, error: "Suggestions can only target text. Reselect text or cancel this draft.", phase: "error" });
+      return false;
+    }
+    const draft = this.#state.kind === "suggest"
+      && this.#state.target.kind === "text"
+      && target.kind === "text"
+      && this.#state.draft.replacement === this.#state.target.anchorText
+      ? immutableDraft({ ...this.#state.draft, replacement: target.anchorText })
+      : this.#state.draft;
     this.#returnFocusTo = returnFocusTo;
     this.#set({
       ...this.#state,
       target: immutableTarget(target, capturedVersion),
       targetStatus: "current",
+      draft,
       error: null,
       phase: "editing",
     });
     this.#focusPrimary(this.#state);
+    return true;
   }
 
   hasUnsentDrafts() {
@@ -107,12 +123,19 @@ export class ReviewComposer {
         }, this.#requestTimeoutMs);
       });
       const outcome = await Promise.race([this.#submit(this.#state, { signal: controller.signal }), timeoutPromise]);
-      if (outcome?.reload) await this.#reload();
+      if (outcome?.reload) {
+        try {
+          await this.#reload();
+        } catch {
+          this.#set({ ...this.#state, phase: "error", error: `${outcome.error || "Document changed."} Could not reload the latest document.` });
+          return false;
+        }
+      }
       if (outcome?.ok === false) {
         this.#set({ ...this.#state, phase: "error", error: outcome.error || "Could not save. Try again." });
         return false;
       }
-      this.close("saved");
+      this.#finishClose("saved");
       return true;
     } catch (error) {
       this.#set({ ...this.#state, phase: "error", error: errorMessage(error) });
@@ -123,7 +146,12 @@ export class ReviewComposer {
   }
 
   close(reason = "cancel") {
-    if (this.#state.phase === "idle") return;
+    if (this.#state.phase === "idle" || this.#state.phase === "submitting") return false;
+    this.#finishClose(reason);
+    return true;
+  }
+
+  #finishClose(reason) {
     const returnFocusTo = this.#returnFocusTo;
     this.#returnFocusTo = null;
     this.#state = IDLE;
