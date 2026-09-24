@@ -6,6 +6,7 @@ import { islandDocument, islandThemeMessage, parseIslandMessage } from "./island
 import { resolveTheme, themeTogglePresentation, toggledTheme } from "./theme.js";
 import { clickAwayDismissal } from "./annotation-overlay.js";
 import { annotationSaveDisposition } from "./annotation-save.js";
+import { ReviewComposer } from "./review-composer.js";
 const qs = new URLSearchParams(location.search);
 const routeReview = /^\/review\/([^/]+)\/?$/.exec(location.pathname);
 const reviewId = routeReview ? decodeURIComponent(routeReview[1]) : qs.get("review");
@@ -18,6 +19,7 @@ const docEl = $("#doc"), railEl = $("#threads"), railPanel = $("#rail"), mainEl 
 let state = { version: null, items: [], html: "" };
 let reviewStatus = null;
 let ws;
+let composerFocusAfterReload = null;
 
 if (!docPath && !reviewId && !docHandle) { docEl.innerHTML = "<p>Open with <code>myd view /abs/file.md</code></p>"; throw new Error("no review, handle or path"); }
 let fileName = docPath?.split("/").pop() ?? "review";
@@ -115,13 +117,16 @@ async function load() {
   const data = await r.json();
   if (seq !== loadSeq) return; // a newer load superseded this one
   const y = window.scrollY;
+  const previousVersion = state.version;
   state = data;
+  if (previousVersion && previousVersion !== data.version) reviewComposer.documentChanged({ version: data.version });
   // A handle tab holds no path and no review, so the document names itself here.
   if (docHandle && data.name) setDocumentTitle(data.name);
   docEl.innerHTML = data.html;
   fixRelativeImages();
   await hydrateRich(seq);
   if (seq !== loadSeq) return;
+  restoreComposerFocusAfterReload();
   paintHighlights();
   renderRail();
   syncRailDefault();
@@ -353,13 +358,24 @@ $("#showResolved").onchange = () => { paintHighlights(); renderRail(); };
 // ---------- selection → comment / suggest ----------
 const popover = $("#popover");
 let pending = null;
-document.addEventListener("mouseup", () => setTimeout(captureSelection, 0));
+function isEditableControl(target) {
+  return target instanceof Element && Boolean(target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])'));
+}
+document.addEventListener("mouseup", (event) => {
+  if (isEditableControl(event.target)) return;
+  setTimeout(captureSelection, 0);
+});
 document.addEventListener("keyup", (e) => { if (e.key === "Escape") closePopover(); });
 function clearAnnotationSelection() { pending = null; getSelection()?.removeAllRanges(); }
-function closePopover() { popover.hidden = true; clearAnnotationSelection(); }
+function closePopover() {
+  if (popover.hidden) return;
+  popover.hidden = true;
+  clearAnnotationSelection();
+}
 function captureSelection() {
   if (!reviewStatus?.tracked) return;
-  if (!editor.hidden || !popover.hidden) return;
+  const reselecting = reviewComposer.state.targetStatus === "reselecting";
+  if ((!editor.hidden && !reselecting) || !popover.hidden) return;
   const sel = getSelection();
   if (!sel || sel.isCollapsed || !docEl.contains(sel.anchorNode)) { if (editor.hidden) closePopover(); return; }
   const range = sel.getRangeAt(0);
@@ -369,7 +385,18 @@ function captureSelection() {
   if (!blockEl || blockEl.closest(".rich")) return;
   // prefix: text before the selection within the block (for disambiguation)
   const pre = document.createRange(); pre.selectNodeContents(blockEl); pre.setEnd(range.startContainer, range.startOffset);
-  pending = { blockPos: blockEl.dataset.pos, anchorText: text, prefix: pre.toString().slice(-40) };
+  const captured = {
+    target: { kind: "text", blockPos: blockEl.dataset.pos, anchorText: text, prefix: pre.toString().slice(-40), preview: text },
+    capturedVersion: state.version,
+    returnFocusTo: { element: blockEl, blockPos: blockEl.dataset.pos, bid: blockEl.dataset.bid },
+  };
+  if (reselecting) {
+    pending = null;
+    sel.removeAllRanges();
+    reviewComposer.retarget(captured);
+    return;
+  }
+  pending = captured;
   const rect = range.getBoundingClientRect();
   popover.style.left = `${Math.max(8, rect.left + rect.width / 2 - 80 + window.scrollX)}px`;
   popover.style.top = `${rect.top + window.scrollY - 44}px`;
@@ -381,26 +408,108 @@ popover.addEventListener("click", (e) => {
   popover.hidden = true; openDialog(act, popover.getBoundingClientRect());
 });
 const editor = $("#editor");
-let edMode = "comment", edTarget = null; // edTarget: {kind:"text"} | {kind:"object", blockEl, target}
 function placeEditor(rect) {
   editor.style.left = `${Math.min(window.innerWidth - 440, Math.max(8, rect.left + window.scrollX))}px`;
   editor.style.top = `${rect.bottom + window.scrollY + 8}px`;
-  editor.hidden = false;
 }
-function clearEditorError() { $("#edError").hidden = true; $("#edError").textContent = ""; }
-function showEditorError(message) { $("#edError").textContent = message; $("#edError").hidden = false; }
+function targetPreview(target) {
+  if (target.kind === "text") return target.preview;
+  return target.object ? `${target.bid} › ${target.object}${target.quote ? `\n“${target.quote.slice(0, 160)}”` : ""}` : `${target.bid} (whole block)`;
+}
+function renderComposer(view) {
+  editor.hidden = view.phase === "idle";
+  if (view.phase === "idle") return;
+  $("#edAnchor").textContent = targetPreview(view.target);
+  $("#edAnchor").hidden = false;
+  const isSuggestion = view.kind === "suggest";
+  $("#edRepl").hidden = !isSuggestion;
+  if ($("#edRepl").value !== view.draft.replacement) $("#edRepl").value = view.draft.replacement;
+  if ($("#edBody").value !== view.draft.body) $("#edBody").value = view.draft.body;
+  $("#edBody").placeholder = isSuggestion ? "Note (optional)" : "Comment…";
+  const stale = view.targetStatus !== "current";
+  $("#edStale").hidden = !stale;
+  $("#edStaleMessage").textContent = view.targetStatus === "reselecting"
+    ? "Select the target again. Your draft is safe."
+    : "Document changed. Reselect the target to save this draft.";
+  $("#edReselect").hidden = view.targetStatus === "reselecting";
+  $("#edError").hidden = !view.error;
+  $("#edError").textContent = view.error ?? "";
+  $("#edSave").disabled = stale || view.phase === "submitting";
+  $("#edSave").textContent = view.phase === "submitting" ? "Saving…" : "Save";
+}
+function resolveDocumentFocusTarget(target) {
+  if (target?.element?.isConnected) return target.element;
+  if (target?.bid) {
+    const byId = docEl.querySelector(`[data-bid="${CSS.escape(target.bid)}"]`);
+    if (byId) return byId;
+  }
+  if (target?.blockPos) {
+    const byPosition = docEl.querySelector(`[data-pos="${CSS.escape(target.blockPos)}"]`);
+    if (byPosition) return byPosition;
+  }
+  return docEl;
+}
+function focusResolvedDocumentTarget(target) {
+  const element = resolveDocumentFocusTarget(target);
+  const temporaryTabIndex = !element.hasAttribute("tabindex");
+  if (temporaryTabIndex) element.setAttribute("tabindex", "-1");
+  element.focus({ preventScroll: true });
+  if (temporaryTabIndex) element.addEventListener("blur", () => element.removeAttribute("tabindex"), { once: true });
+}
+function focusDocumentTarget(target, reason) {
+  focusResolvedDocumentTarget(target);
+  if (reason !== "saved") return;
+  composerFocusAfterReload = target;
+}
+function restoreComposerFocusAfterReload() {
+  if (!composerFocusAfterReload) return;
+  const target = composerFocusAfterReload;
+  composerFocusAfterReload = null;
+  if (document.activeElement !== document.body && document.activeElement !== docEl) return;
+  focusResolvedDocumentTarget(target);
+}
+document.addEventListener("pointerdown", () => { composerFocusAfterReload = null; }, true);
+document.addEventListener("focusin", (event) => {
+  if (composerFocusAfterReload && event.target !== resolveDocumentFocusTarget(composerFocusAfterReload)) composerFocusAfterReload = null;
+}, true);
+async function submitAnnotation(view, { signal }) {
+  const { target, draft } = view;
+  let response;
+  if (target.kind === "object") {
+    if (!draft.body.trim()) return { ok: false, error: "Write a comment before saving." };
+    response = await fetch("/api/annotate-object", { method: "POST", signal, body: JSON.stringify({ ...documentRef(), version: target.capturedVersion, bid: target.bid, target: target.object, quote: target.quote, body: draft.body, by: "user" }) });
+  } else {
+    const isSuggestion = view.kind === "suggest";
+    if (!isSuggestion && !draft.body.trim()) return { ok: false, error: "Write a comment before saving." };
+    response = await fetch("/api/annotate", { method: "POST", signal, body: JSON.stringify({ ...documentRef(), version: target.capturedVersion, blockPos: target.blockPos, anchorText: target.anchorText, prefix: target.prefix, kind: isSuggestion ? "suggestion" : "comment", body: draft.body, replacement: draft.replacement, note: draft.body, by: "user" }) });
+  }
+  const disposition = await annotationSaveDisposition(response, target.kind === "object" ? "Failed to save comment" : "Failed to save annotation");
+  return { ok: disposition.close, reload: disposition.reload, error: disposition.error };
+}
+const reviewComposer = new ReviewComposer({
+  submit: submitAnnotation,
+  reload: load,
+  onChange: renderComposer,
+  focusPrimary: (view) => (view.kind === "suggest" ? $("#edRepl") : $("#edBody")).focus(),
+  restoreFocus: focusDocumentTarget,
+  onClose: clearAnnotationSelection,
+});
 function openDialog(kind, rect) {
-  edMode = kind; edTarget = { kind: "text" };
-  clearEditorError();
-  $("#edAnchor").textContent = pending.anchorText; $("#edAnchor").hidden = false;
+  const captured = pending;
+  if (!captured) return;
   const isSug = kind === "suggest";
-  $("#edRepl").hidden = !isSug; $("#edRepl").value = isSug ? pending.anchorText : "";
-  $("#edBody").value = ""; $("#edBody").placeholder = isSug ? "Note (optional)" : "Comment…";
   placeEditor(rect ?? getSelection().getRangeAt(0).getBoundingClientRect());
-  (isSug ? $("#edRepl") : $("#edBody")).focus();
+  reviewComposer.open({
+    kind,
+    ...captured,
+    draft: { body: "", replacement: isSug ? captured.target.anchorText : "" },
+  });
 }
-function closeEditor() { editor.hidden = true; edTarget = null; clearEditorError(); clearAnnotationSelection(); }
+function closeEditor() { reviewComposer.close("cancel"); }
 $("#edCancel").onclick = closeEditor;
+$("#edReselect").onclick = () => reviewComposer.beginReselect();
+$("#edBody").addEventListener("input", () => reviewComposer.updateDraft({ body: $("#edBody").value }));
+$("#edRepl").addEventListener("input", () => reviewComposer.updateDraft({ replacement: $("#edRepl").value }));
 editor.addEventListener("keydown", (e) => {
   const submit = isEditorSubmitShortcut(e);
   if (submit) { e.preventDefault(); saveEditor(); }
@@ -409,28 +518,11 @@ editor.addEventListener("keydown", (e) => {
 $("#edSave").onclick = saveEditor;
 async function saveEditor() {
   if (!reviewStatus?.tracked) return;
-  const body = $("#edBody").value, repl = $("#edRepl").value;
-  if (edTarget?.kind === "object") {
-    if (!body.trim()) return;
-    const r = await fetch("/api/annotate-object", { method: "POST", body: JSON.stringify({ ...documentRef(), version: state.version, bid: edTarget.blockEl.dataset.bid, target: edTarget.target, quote: edTarget.quote, body, by: "user" }) });
-    const disposition = await annotationSaveDisposition(r, "Failed to save comment");
-    if (disposition.reload) await load();
-    if (disposition.error) showEditorError(disposition.error);
-    if (disposition.close) closeEditor();
-    return;
-  }
-  if (!pending) return;
-  const isSug = edMode === "suggest";
-  if (!isSug && !body.trim()) return;
-  const payload = { ...documentRef(), version: state.version, ...pending, kind: isSug ? "suggestion" : "comment", body, replacement: repl, note: body, by: "user" };
-  const r = await fetch("/api/annotate", { method: "POST", body: JSON.stringify(payload) });
-  const disposition = await annotationSaveDisposition(r);
-  if (disposition.reload) await load();
-  if (disposition.error) showEditorError(disposition.error);
-  if (disposition.close) closeEditor();
+  await reviewComposer.submit();
 }
 function dismissAnnotationOverlays(target) {
   const dismissal = clickAwayDismissal(target, editor, popover);
+  if (dismissal === editor && (reviewComposer.hasUnsentDrafts() || reviewComposer.state.targetStatus === "reselecting")) return;
   if (dismissal === editor) closeEditor();
   if (dismissal === popover) closePopover();
 }
@@ -438,12 +530,19 @@ document.addEventListener("mousedown", (e) => dismissAnnotationOverlays(e.target
 
 function objectComment(blockEl, target, evt, quote = null) {
   if (!reviewStatus?.tracked) return;
-  edMode = "comment"; edTarget = { kind: "object", blockEl, target, quote }; pending = null;
-  clearEditorError();
-  $("#edAnchor").textContent = target ? `${blockEl.dataset.bid} › ${target}${quote ? `\n“${quote.slice(0, 160)}”` : ""}` : `${blockEl.dataset.bid} (whole block)`; $("#edAnchor").hidden = false;
-  $("#edRepl").hidden = true; $("#edBody").value = ""; $("#edBody").placeholder = "Comment…";
+  const captured = {
+    target: { kind: "object", bid: blockEl.dataset.bid, object: target, quote },
+    capturedVersion: state.version,
+    returnFocusTo: { element: evt?.target instanceof Element ? evt.target : blockEl, bid: blockEl.dataset.bid },
+  };
+  if (reviewComposer.state.targetStatus === "reselecting") {
+    reviewComposer.retarget(captured);
+    return;
+  }
+  pending = null;
   const rect = (evt?.target?.getBoundingClientRect?.()) ?? blockEl.getBoundingClientRect();
-  placeEditor(rect); $("#edBody").focus();
+  placeEditor(rect);
+  reviewComposer.open({ kind: "comment", ...captured });
 }
 
 // ---------- rail ----------
