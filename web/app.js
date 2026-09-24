@@ -581,12 +581,30 @@ function setRailView(view) {
 
 function setChangeMode(enabled) {
   window.scrollTo({ top: window.scrollY, behavior: "instant" });
+  let spacer = $("#modePositionSpacer");
+  if (!spacer) {
+    spacer = document.createElement("div");
+    spacer.id = "modePositionSpacer";
+    spacer.setAttribute("aria-hidden", "true");
+    document.body.append(spacer);
+  }
+  const pageHeight = document.documentElement.scrollHeight;
+  spacer.style.height = "0px";
   const selected = reviewChanges?.changeSet.changes[selectedChangeIndex];
-  const anchor = selected ? changeRegion(selected) : null;
+  let anchor = selected ? changeRegion(selected) : null;
+  if (selected?.kind === "removed" && anchor) {
+    const visibleDocumentNeighbor = (direction) => {
+      let candidate = anchor[direction];
+      while (candidate && (!candidate.matches?.("[data-bid]") || candidate.getClientRects().length === 0)) candidate = candidate[direction];
+      return candidate;
+    };
+    anchor = visibleDocumentNeighbor("nextElementSibling") ?? visibleDocumentNeighbor("previousElementSibling") ?? anchor;
+  }
   const anchorTop = anchor?.getBoundingClientRect().top;
   changeModePreference = enabled;
   document.documentElement.dataset.reviewMode = enabled ? "changes" : "document";
   $("#changeModeToggle").textContent = enabled ? "Full document" : "Show changes";
+  spacer.style.height = `${Math.max(0, pageHeight - document.documentElement.scrollHeight)}px`;
   if (anchor && Number.isFinite(anchorTop)) {
     const shift = anchor.getBoundingClientRect().top - anchorTop;
     if (shift) window.scrollTo({ top: window.scrollY + shift, behavior: "instant" });

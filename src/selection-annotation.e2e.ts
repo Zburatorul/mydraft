@@ -778,6 +778,12 @@ describe("cross-element annotation in a real browser", () => {
     expect(await tombstone.locator("pre").textContent()).toBe("Legacy details that must remain inspectable.");
     const documentText = await page.locator("#doc").textContent() ?? "";
     expect(documentText.indexOf("Keep this context.")).toBeLessThan(documentText.indexOf("Removed · Legacy details"));
+    await page.setViewportSize({ width: 1400, height: 300 });
+    await tombstone.evaluate((element) => element.scrollIntoView({ block: "center", behavior: "instant" }));
+    const neighborTop = await page.locator('#doc > [data-bid="b1"]').evaluate((element) => element.getBoundingClientRect().top);
+    await page.locator("#changeModeToggle").click();
+    expect(await tombstone.isHidden()).toBeTrue();
+    expect(Math.abs(await page.locator('#doc > [data-bid="b1"]').evaluate((element) => element.getBoundingClientRect().top) - neighborTop)).toBeLessThanOrEqual(2);
     await page.close();
   }, E2E_TIMEOUT_MS);
 

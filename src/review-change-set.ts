@@ -85,6 +85,7 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
   const afterDoc = loadDoc("after.md", input.afterSource);
   const before = describeBlocks(beforeDoc);
   const after = describeBlocks(afterDoc);
+  const afterContentKeys = after.map((candidate) => hashVersion(candidate.source).slice(0, 12));
   const beforeMatch = new Map<number, number>();
   const afterMatch = new Map<number, number>();
 
@@ -188,10 +189,12 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
       semanticChanges: semanticFor(before[i]!.block.id, null),
     }, position: insertionIndex - .5, tie: i });
   }
+  const addedOccurrences = new Map<string, number>();
   for (let j = 0; j < after.length; j++) {
     if (afterMatch.has(j)) continue;
-    const contentKey = hashVersion(after[j]!.source).slice(0, 12);
-    const contentOccurrence = after.slice(0, j).filter((candidate, index) => !afterMatch.has(index) && hashVersion(candidate.source).slice(0, 12) === contentKey).length + 1;
+    const contentKey = afterContentKeys[j]!;
+    const contentOccurrence = (addedOccurrences.get(contentKey) ?? 0) + 1;
+    addedOccurrences.set(contentKey, contentOccurrence);
     ordered.push({ change: {
       id: `change-added-${after[j]!.block.name ?? `${contentKey}-${contentOccurrence}`}`,
       kind: "added",
