@@ -61,7 +61,7 @@ describe("ReviewHistory", () => {
       revision: null,
     };
     history.complete(archive);
-    history.complete({ ...archive });
+    history.complete({ ...archive, completedAt: "2026-09-23T18:00:01.000Z" });
 
     expect(saves).toBe(1);
     expect(() => history.complete({ ...archive, source: "# Replaced\n" })).toThrow("already frozen");

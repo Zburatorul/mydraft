@@ -62,6 +62,7 @@ html[data-review-mode="changes"] #doc > [data-change-id] { position: relative; m
 html[data-review-mode="changes"] #doc > [data-change-kind="added"] { background: color-mix(in srgb, #10b981 8%, var(--panel)); box-shadow: inset 5px 0 #159467; }
 .change-context-link { margin: 7px 0 3px; padding: 0; border: 0; color: #6d28d9; background: transparent; font-size: 10px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
 .change-context-link:has(+ [data-change-kind="added"]) { color: #08754a; }
+.change-context-link:has(+ [data-change-kind="moved"]) { color: #2463a7; }
 html[data-review-mode="document"] .change-context-link { display: none; }
 html[data-review-mode="changes"] #doc > [data-change-active="true"],
 html[data-review-mode="changes"] .change-tombstone[data-change-active="true"] { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 3px; }
@@ -82,6 +83,7 @@ html[data-review-mode="document"] .change-tombstone { display: none; }
 .change-kind.modified { color: #6d28d9; }
 .change-kind.added { color: #08754a; }
 .change-kind.removed { color: #b42333; }
+.change-kind.moved { color: #2463a7; }
 .semantic-summary { margin: 5px 0; color: var(--muted); font-size: 11px; }
 .prior-thread { margin-top: 7px; border-top: 1px solid var(--line); padding-top: 6px; }
 .prior-thread summary { color: var(--accent); cursor: pointer; font-size: 12px; }

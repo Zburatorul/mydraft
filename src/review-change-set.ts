@@ -2,7 +2,7 @@ import { hashVersion, loadDoc, type Doc, type ReviewItem } from "./doc.ts";
 import { diffExplainers, type ExplainerChange } from "./explainer-diff.ts";
 import { topBlocks, topCodeFences, type Block } from "./render.ts";
 
-export type ReviewChangeKind = "added" | "modified" | "removed";
+export type ReviewChangeKind = "added" | "modified" | "removed" | "moved";
 
 export type ReviewChangeBlock = {
   blockId: string;
@@ -31,14 +31,27 @@ type DescribedBlock = {
   block: Block;
   source: string;
   section: string;
+  words: Set<string>;
 };
+
+const WORD_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "word" });
+const STOP_WORDS = new Set(["a", "an", "and", "as", "at", "by", "for", "from", "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "with"]);
+
+function wordTokens(value: string): Set<string> {
+  return new Set(
+    [...WORD_SEGMENTER.segment(value.normalize("NFKC").toLowerCase())]
+      .filter((part) => part.isWordLike)
+      .map((part) => part.segment)
+      .filter((word) => !STOP_WORDS.has(word)),
+  );
+}
 
 function describeBlocks(doc: Doc): DescribedBlock[] {
   let section = "document";
   return topBlocks(doc).map((block) => {
     const source = doc.clean.slice(doc.origToClean(block.start), doc.origToClean(block.end)).trimEnd();
     if (block.type.startsWith("h")) section = block.name ?? source.replace(/^#{1,6}\s+/, "").replace(/\s+\{#[^}]+\}\s*$/, "");
-    return { block, source, section };
+    return { block, source, section, words: wordTokens(source) };
   });
 }
 
@@ -71,13 +84,10 @@ function itemIdsInBlock(items: ReviewItem[], value: DescribedBlock): string[] {
     .map((item) => item.id);
 }
 
-function wordSimilarity(left: string, right: string): number {
-  const stopWords = new Set(["a", "an", "and", "as", "at", "by", "for", "from", "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "with"]);
-  const words = (value: string) => new Set((value.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter((word) => !stopWords.has(word)));
-  const a = words(left), b = words(right);
-  if (!a.size || !b.size) return 0;
-  const intersection = [...a].filter((word) => b.has(word)).length;
-  return intersection / new Set([...a, ...b]).size;
+function wordSimilarity(left: Set<string>, right: Set<string>): number {
+  if (!left.size || !right.size) return 0;
+  const intersection = [...left].filter((word) => right.has(word)).length;
+  return intersection / new Set([...left, ...right]).size;
 }
 
 export function buildReviewChangeSet(input: { beforeSource: string; afterSource: string }): ReviewChangeSet {
@@ -125,7 +135,7 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
     const candidates = beforeIndices.flatMap((beforeIndex) => afterIndices.map((afterIndex) => ({
       beforeIndex,
       afterIndex,
-      score: wordSimilarity(before[beforeIndex]!.source, after[afterIndex]!.source),
+      score: wordSimilarity(before[beforeIndex]!.words, after[afterIndex]!.words),
     }))).sort((left, right) => right.score - left.score);
     for (const candidate of candidates) {
       if (candidate.score < .3 || beforeMatch.has(candidate.beforeIndex) || afterMatch.has(candidate.afterIndex)) continue;
@@ -142,6 +152,34 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
     }
   }
 
+  // A heading rename changes the textual section key for every block beneath it. Once the
+  // high-confidence same-section pass is exhausted, allow conservative whole-document matches
+  // by block type so an ordinary retitle does not turn one edited section into deletions/additions.
+  const remainingTypes = new Set(before
+    .filter((candidate, index) => !beforeMatch.has(index) && !candidate.block.name)
+    .map((candidate) => candidate.block.type));
+  for (const type of remainingTypes) {
+    const beforeIndices = before.flatMap((candidate, index) => !beforeMatch.has(index) && !candidate.block.name && candidate.block.type === type ? [index] : []);
+    const afterIndices = after.flatMap((candidate, index) => !afterMatch.has(index) && !candidate.block.name && candidate.block.type === type ? [index] : []);
+    const candidates = beforeIndices.flatMap((beforeIndex) => afterIndices.map((afterIndex) => ({
+      beforeIndex,
+      afterIndex,
+      score: wordSimilarity(before[beforeIndex]!.words, after[afterIndex]!.words),
+    }))).sort((left, right) => right.score - left.score);
+    for (const candidate of candidates) {
+      if (candidate.score < .3 || beforeMatch.has(candidate.beforeIndex) || afterMatch.has(candidate.afterIndex)) continue;
+      const ambiguousBefore = candidates.some((other) => other.beforeIndex === candidate.beforeIndex
+        && other.afterIndex !== candidate.afterIndex
+        && !afterMatch.has(other.afterIndex)
+        && other.score >= candidate.score - .05);
+      const ambiguousAfter = candidates.some((other) => other.afterIndex === candidate.afterIndex
+        && other.beforeIndex !== candidate.beforeIndex
+        && !beforeMatch.has(other.beforeIndex)
+        && other.score >= candidate.score - .05);
+      if (!ambiguousBefore && !ambiguousAfter) pair(candidate.beforeIndex, candidate.afterIndex);
+    }
+  }
+
   const beforeExplainers = new Map(topCodeFences(beforeDoc).filter((fence) => fence.lang === "explainer").map((fence) => [fence.block.id, fence.source]));
   const afterExplainers = new Map(topCodeFences(afterDoc).filter((fence) => fence.lang === "explainer").map((fence) => [fence.block.id, fence.source]));
   const semanticFor = (beforeBlockId: string | null, afterBlockId: string | null) => {
@@ -152,11 +190,31 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
 
   const ordered: Array<{ change: ReviewChange; position: number; tie: number }> = [];
   const unchangedAfterBlockIds: string[] = [];
+  const reorderedBeforeIndices = new Set<number>();
+  const matchedPairs = [...beforeMatch.entries()].sort(([left], [right]) => left - right);
+  for (let left = 0; left < matchedPairs.length; left++) {
+    for (let right = left + 1; right < matchedPairs.length; right++) {
+      if (matchedPairs[left]![1] <= matchedPairs[right]![1]) continue;
+      reorderedBeforeIndices.add(matchedPairs[left]![0]);
+      reorderedBeforeIndices.add(matchedPairs[right]![0]);
+    }
+  }
   for (let j = 0; j < after.length; j++) {
     const i = afterMatch.get(j);
     if (i === undefined) continue;
     if (before[i]!.source === after[j]!.source) {
-      unchangedAfterBlockIds.push(after[j]!.block.id);
+      if (reorderedBeforeIndices.has(i)) {
+        ordered.push({ change: {
+          id: `change-moved-${before[i]!.block.id}`,
+          kind: "moved",
+          before: blockView(before[i]!),
+          after: blockView(after[j]!),
+          insertBeforeBlockId: null,
+          summary: summary(after[j]!),
+          priorItemIds: itemIdsInBlock(beforeDoc.items, before[i]!),
+          semanticChanges: [],
+        }, position: j, tie: j });
+      } else unchangedAfterBlockIds.push(after[j]!.block.id);
       continue;
     }
     ordered.push({ change: {

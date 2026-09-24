@@ -677,6 +677,7 @@ function applyRenderedChanges(changeSet) {
   docEl.querySelectorAll(".unchanged-run-anchor").forEach((element) => element.remove());
 
   const stable = new Set(changeSet.unchangedAfterBlockIds);
+  const changeLabel = (kind) => ({ modified: "Modified", added: "Added", moved: "Moved", removed: "Removed" })[kind] ?? "Changed";
   for (const element of docEl.querySelectorAll(":scope > [data-bid]")) {
     if (stable.has(element.dataset.bid)) element.dataset.changeStable = "true";
   }
@@ -686,7 +687,7 @@ function applyRenderedChanges(changeSet) {
       if (!element) continue;
       element.dataset.changeId = change.id;
       element.dataset.changeKind = change.kind;
-      element.dataset.changeLabel = change.kind === "modified" ? "Modified" : "Added";
+      element.dataset.changeLabel = changeLabel(change.kind);
       element.setAttribute("tabindex", "-1");
       for (const semantic of change.semanticChanges) {
         const object = element.querySelector(`[data-myd-target="${CSS.escape(semantic.id)}"]`);
@@ -695,7 +696,7 @@ function applyRenderedChanges(changeSet) {
       const contextLink = document.createElement("button");
       contextLink.type = "button";
       contextLink.className = "change-context-link";
-      contextLink.textContent = `${change.kind === "modified" ? "Modified" : "Added"} · Review context`;
+      contextLink.textContent = `${changeLabel(change.kind)} · Review context`;
       contextLink.onclick = () => revealChangeContext(changeIndex);
       docEl.insertBefore(contextLink, element);
       continue;

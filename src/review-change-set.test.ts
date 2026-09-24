@@ -240,4 +240,45 @@ describe("ReviewChangeSet", () => {
     expect(firstId).toBe("change-modified-b1");
     expect(secondId).toBe(firstId);
   });
+
+  test("reordered sections are explicit changes rather than collapsed unchanged content", () => {
+    const before = "# Doc\n\n## A\n\nAlpha text here.\n\n## B\n\nBeta text here.\n";
+    const after = "# Doc\n\n## B\n\nBeta text here.\n\n## A\n\nAlpha text here.\n";
+
+    const changeSet = buildReviewChangeSet({ beforeSource: before, afterSource: after });
+    expect(changeSet.changes.map((change) => `${change.kind}:${change.summary}`)).toEqual([
+      "moved:B",
+      "moved:Beta text here.",
+      "moved:A",
+      "moved:Alpha text here.",
+    ]);
+    expect(changeSet.unchangedAfterBlockIds).toEqual(["b0"]);
+  });
+
+  test("a renamed heading keeps its edited section paired as modifications", () => {
+    const before = "# Doc\n\n## Rollout plan\n\nWe ship the migration on Monday after the freeze ends.\n\n## Risks\n\nNone known.\n";
+    const after = "# Doc\n\n## Launch plan\n\nWe ship the migration on Tuesday after the freeze ends.\n\n## Risks\n\nNone known.\n";
+
+    const changeSet = buildReviewChangeSet({ beforeSource: before, afterSource: after });
+    expect(changeSet.changes.map((change) => `${change.kind}:${change.summary}`)).toEqual([
+      "modified:Launch plan",
+      "modified:We ship the migration on Tuesday after the freeze ends.",
+    ]);
+    expect(changeSet.unchangedAfterBlockIds).toEqual(["b0", "b3", "b4"]);
+  });
+
+  test("a non-Latin sentence edit remains one modification", () => {
+    const before = "# Документ\n\nМы выпускаем миграцию в понедельник после заморозки.\n";
+    const after = "# Документ\n\nМы выпускаем миграцию во вторник после заморозки.\n";
+
+    const changeSet = buildReviewChangeSet({ beforeSource: before, afterSource: after });
+    expect(changeSet.changes).toEqual([
+      expect.objectContaining({
+        kind: "modified",
+        before: expect.objectContaining({ source: "Мы выпускаем миграцию в понедельник после заморозки." }),
+        after: expect.objectContaining({ source: "Мы выпускаем миграцию во вторник после заморозки." }),
+      }),
+    ]);
+    expect(changeSet.unchangedAfterBlockIds).toEqual(["b0"]);
+  });
 });
