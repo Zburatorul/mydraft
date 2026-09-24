@@ -165,8 +165,10 @@ describe("cross-element annotation in a real browser", () => {
     });
     const failed = page.waitForResponse((response) => response.url().endsWith("/api/annotate") && response.status() === 500);
     await page.locator("#edSave").evaluate((button) => { (button as HTMLButtonElement).click(); (button as HTMLButtonElement).click(); });
+    expect(await page.locator("#edCancel").isDisabled()).toBeTrue();
     await failed;
     expect(attempts).toBe(1);
+    expect(await page.locator("#edCancel").isEnabled()).toBeTrue();
     expect(await page.locator("#edBody").inputValue()).toBe("Do not lose this draft.");
     expect(await page.locator("#edError").textContent()).toBe("Failed to save annotation");
     await page.close();
@@ -387,6 +389,43 @@ describe("cross-element annotation in a real browser", () => {
     expect(await page.locator("#edBody").inputValue()).toBe("Keep this object comment.");
     expect(await page.locator("#edStale").isHidden()).toBeTrue();
 
+    const saved = page.waitForResponse((response) => response.url().endsWith("/api/annotate-object") && response.request().method() === "POST");
+    await page.locator("#edSave").click();
+    expect((await saved).status()).toBe(200);
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
+  test("clicking an object retargets an open comment without replacing its draft", async () => {
+    const source = [
+      SOURCE.trimEnd(),
+      "",
+      "```explainer {#retarget-object}",
+      "title: One event",
+      "sections:",
+      "  - type: timing",
+      "    id: handoff",
+      "    parties: [Human]",
+      "    events:",
+      "      - id: inspect",
+      "        party: Human",
+      "        observes: a draft",
+      "        action: review it",
+      "        locality: local",
+      "        synchronization: communicated",
+      "```",
+      "",
+    ].join("\n");
+    const { page } = await trackedPage("retarget-object.md", source, { width: 1400, height: 900 });
+    await selectAcrossLink(page);
+    await page.locator('#popover [data-act="comment"]').click();
+    await page.locator("#edBody").fill("Keep this draft while changing targets.");
+
+    const object = page.locator(".timing-event").first();
+    const objectTarget = await object.getAttribute("data-myd-target");
+    await object.click();
+
+    expect(await page.locator("#edBody").inputValue()).toBe("Keep this draft while changing targets.");
+    expect(await page.locator("#edAnchor").textContent()).toContain(objectTarget!);
     const saved = page.waitForResponse((response) => response.url().endsWith("/api/annotate-object") && response.request().method() === "POST");
     await page.locator("#edSave").click();
     expect((await saved).status()).toBe(200);

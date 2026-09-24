@@ -434,8 +434,13 @@ function renderComposer(view) {
   $("#edReselect").hidden = view.targetStatus === "reselecting";
   $("#edError").hidden = !view.error;
   $("#edError").textContent = view.error ?? "";
-  $("#edSave").disabled = stale || view.phase === "submitting";
-  $("#edSave").textContent = view.phase === "submitting" ? "Saving…" : "Save";
+  const submitting = view.phase === "submitting";
+  $("#edSave").disabled = stale || submitting;
+  $("#edCancel").disabled = submitting;
+  $("#edReselect").disabled = submitting;
+  $("#edBody").disabled = submitting;
+  $("#edRepl").disabled = submitting;
+  $("#edSave").textContent = submitting ? "Saving…" : "Save";
 }
 function resolveDocumentFocusTarget(target) {
   if (target?.element?.isConnected) return target.element;
@@ -490,7 +495,7 @@ const reviewComposer = new ReviewComposer({
   submit: submitAnnotation,
   reload: load,
   onChange: renderComposer,
-  focusPrimary: (view) => (view.kind === "suggest" ? $("#edRepl") : $("#edBody")).focus(),
+  focusPrimary: (view) => (view.kind === "suggest" ? $("#edRepl") : $("#edBody")).focus({ preventScroll: true }),
   restoreFocus: focusDocumentTarget,
   onClose: clearAnnotationSelection,
 });
@@ -535,7 +540,7 @@ function objectComment(blockEl, target, evt, quote = null) {
     capturedVersion: state.version,
     returnFocusTo: { element: evt?.target instanceof Element ? evt.target : blockEl, bid: blockEl.dataset.bid },
   };
-  if (reviewComposer.state.targetStatus === "reselecting") {
+  if (reviewComposer.state.phase !== "idle") {
     reviewComposer.retarget(captured);
     return;
   }
