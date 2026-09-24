@@ -22,6 +22,7 @@ let ws;
 let composerFocusAfterReload = null;
 let reviewChanges = null;
 let selectedChangeIndex = 0;
+let selectedChangeId = null;
 let changeModePreference = null;
 let railView = "comments";
 
@@ -135,11 +136,11 @@ async function load() {
   if (seq !== loadSeq) return true;
   restoreComposerFocusAfterReload();
   paintHighlights();
-  await loadReviewChanges(data, seq);
+  const focusedInitialChange = await loadReviewChanges(data, seq);
   if (seq !== loadSeq) return true;
   renderRail();
   syncRailDefault();
-  window.scrollTo(0, y);
+  if (!focusedInitialChange) window.scrollTo(0, y);
   statusEl.textContent = revisionLabel(data.revision, data.version);
   statusEl.title = revisionTitle(data.revision, data.version);
   $("#changesBtn").hidden = !data.changesAvailable;
@@ -574,8 +575,8 @@ function setRailView(view) {
   railEl.hidden = view !== "comments";
   $("#changeTab").classList.toggle("active", view === "changes");
   $("#commentTab").classList.toggle("active", view === "comments");
-  $("#changeTab").setAttribute("aria-selected", String(view === "changes"));
-  $("#commentTab").setAttribute("aria-selected", String(view === "comments"));
+  $("#changeTab").setAttribute("aria-pressed", String(view === "changes"));
+  $("#commentTab").setAttribute("aria-pressed", String(view === "comments"));
 }
 
 function setChangeMode(enabled) {
@@ -594,6 +595,7 @@ function selectChange(index, { scroll = true } = {}) {
   }
   selectedChangeIndex = Math.max(0, Math.min(index, changes.length - 1));
   const selected = changes[selectedChangeIndex];
+  selectedChangeId = selected.id;
   docEl.querySelectorAll("[data-change-active]").forEach((element) => element.removeAttribute("data-change-active"));
   $("#changeCards").querySelectorAll(".change-card").forEach((card) => card.classList.toggle("active", card.dataset.changeId === selected.id));
   const region = changeRegion(selected);
@@ -623,22 +625,35 @@ function priorThreadHtml(ids, items) {
   }).join("");
 }
 
+function revealChangeContext(index) {
+  selectChange(index, { scroll: false });
+  setRailView("changes");
+  setRailOpen(true);
+  const card = $("#changeCards").querySelectorAll(".change-card")[index];
+  if (!card) return;
+  card.querySelector("details")?.setAttribute("open", "");
+  card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
 function applyRenderedChanges(changeSet) {
   docEl.querySelectorAll("[data-change-id], [data-change-stable], [data-semantic-change]").forEach((element) => {
     element.removeAttribute("data-change-id");
     element.removeAttribute("data-change-kind");
     element.removeAttribute("data-change-label");
     element.removeAttribute("data-change-stable");
+    element.removeAttribute("data-change-collapsed");
     element.removeAttribute("data-semantic-change");
     element.removeAttribute("data-change-active");
   });
   docEl.querySelectorAll(".change-tombstone").forEach((element) => element.remove());
+  docEl.querySelectorAll(".change-context-link").forEach((element) => element.remove());
+  docEl.querySelectorAll(".unchanged-run-toggle").forEach((element) => element.remove());
 
   const stable = new Set(changeSet.unchangedAfterBlockIds);
   for (const element of docEl.querySelectorAll(":scope > [data-bid]")) {
     if (stable.has(element.dataset.bid)) element.dataset.changeStable = "true";
   }
-  for (const change of changeSet.changes) {
+  for (const [changeIndex, change] of changeSet.changes.entries()) {
     if (change.after) {
       const element = docEl.querySelector(`:scope > [data-bid="${CSS.escape(change.after.blockId)}"]`);
       if (!element) continue;
@@ -650,18 +665,67 @@ function applyRenderedChanges(changeSet) {
         const object = element.querySelector(`[data-myd-target="${CSS.escape(semantic.id)}"]`);
         if (object) object.dataset.semanticChange = "true";
       }
+      const contextLink = document.createElement("button");
+      contextLink.type = "button";
+      contextLink.className = "change-context-link";
+      contextLink.textContent = `${change.kind === "modified" ? "Modified" : "Added"} · Review context`;
+      contextLink.onclick = () => revealChangeContext(changeIndex);
+      docEl.insertBefore(contextLink, element);
       continue;
     }
-    const tombstone = document.createElement("button");
-    tombstone.type = "button";
+    const tombstone = document.createElement("section");
     tombstone.className = "change-tombstone";
     tombstone.dataset.changeId = change.id;
     tombstone.dataset.changeKind = "removed";
-    tombstone.textContent = `Removed · ${change.summary}`;
-    const blocks = [...docEl.querySelectorAll(":scope > [data-bid]")];
-    docEl.insertBefore(tombstone, blocks[Math.min(change.before?.index ?? blocks.length, blocks.length)] ?? null);
-    tombstone.onclick = () => selectChange(changeSet.changes.indexOf(change));
+    tombstone.tabIndex = -1;
+    const label = document.createElement("strong");
+    label.textContent = `Removed · ${change.summary}`;
+    const contextLink = document.createElement("button");
+    contextLink.type = "button";
+    contextLink.className = "link";
+    contextLink.textContent = "Review context";
+    contextLink.onclick = () => revealChangeContext(changeIndex);
+    const details = document.createElement("details");
+    const detailsSummary = document.createElement("summary");
+    detailsSummary.textContent = "Show removed content";
+    const source = document.createElement("pre");
+    source.textContent = change.before?.source ?? "";
+    details.append(detailsSummary, source);
+    tombstone.append(label, contextLink, details);
+    const insertionTarget = change.insertBeforeBlockId
+      ? docEl.querySelector(`:scope > [data-bid="${CSS.escape(change.insertBeforeBlockId)}"]`)
+      : null;
+    docEl.insertBefore(tombstone, insertionTarget);
   }
+
+  let stableRun = [];
+  const finishStableRun = () => {
+    if (stableRun.length < 3) { stableRun = []; return; }
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "unchanged-run-toggle";
+    toggle.setAttribute("aria-expanded", "false");
+    const run = [...stableRun];
+    stableRun = [];
+    const setExpanded = (expanded) => {
+      for (const element of run) element.dataset.changeCollapsed = String(!expanded);
+      toggle.setAttribute("aria-expanded", String(expanded));
+      toggle.textContent = expanded ? `Hide ${run.length} unchanged regions` : `Show ${run.length} unchanged regions`;
+    };
+    setExpanded(false);
+    toggle.onclick = () => {
+      const expanded = toggle.getAttribute("aria-expanded") === "true";
+      for (const element of run) element.dataset.changeCollapsed = String(expanded);
+      toggle.setAttribute("aria-expanded", String(!expanded));
+      toggle.textContent = expanded ? `Show ${run.length} unchanged regions` : `Hide ${run.length} unchanged regions`;
+    };
+    docEl.insertBefore(toggle, run[0]);
+  };
+  for (const element of docEl.querySelectorAll(":scope > [data-bid]")) {
+    if (element.dataset.changeStable === "true") stableRun.push(element);
+    else finishStableRun();
+  }
+  finishStableRun();
 }
 
 function renderChangeCards(data) {
@@ -681,21 +745,36 @@ function renderChangeCards(data) {
   });
 }
 
+function clearReviewChanges() {
+  reviewChanges = null;
+  selectedChangeIndex = 0;
+  selectedChangeId = null;
+  changeModePreference = null;
+  railView = "comments";
+  applyRenderedChanges({ changes: [], unchangedAfterBlockIds: [] });
+  $("#changeNavigator").hidden = true;
+  $("#railTabs").hidden = true;
+  $("#commentsHeading").hidden = false;
+  $("#changeCards").hidden = true;
+  railEl.hidden = false;
+  document.documentElement.dataset.reviewMode = "document";
+}
+
 async function loadReviewChanges(documentData, seq) {
   if (!documentData.comparison) {
-    reviewChanges = null;
-    $("#changeNavigator").hidden = true;
-    $("#railTabs").hidden = true;
-    $("#commentsHeading").hidden = false;
-    $("#changeCards").hidden = true;
-    railEl.hidden = false;
-    document.documentElement.dataset.reviewMode = "document";
-    return;
+    clearReviewChanges();
+    return false;
   }
-  const response = await fetch(`/api/changes?${documentQuery()}`);
-  if (!response.ok || seq !== loadSeq) return;
+  let response;
+  try { response = await fetch(`/api/changes?${documentQuery()}&version=${encodeURIComponent(documentData.version)}`); }
+  catch { if (seq === loadSeq) clearReviewChanges(); return false; }
+  if (!response.ok) { if (seq === loadSeq) clearReviewChanges(); return false; }
   const data = await response.json();
-  if (!data.available || data.mode !== "review") return;
+  if (seq !== loadSeq) return false;
+  if (!data.available || data.mode !== "review") { clearReviewChanges(); return false; }
+  const firstChangeLoad = reviewChanges === null;
+  const previousSelectedId = selectedChangeId;
+  const previousSelectedIndex = selectedChangeIndex;
   reviewChanges = data;
   if (changeModePreference === null) {
     changeModePreference = true;
@@ -710,7 +789,9 @@ async function loadReviewChanges(documentData, seq) {
   renderChangeCards(data);
   setRailView(railView);
   setChangeMode(changeModePreference);
-  selectChange(Math.min(selectedChangeIndex, Math.max(0, data.changeSet.changes.length - 1)), { scroll: false });
+  const preservedIndex = data.changeSet.changes.findIndex((change) => change.id === previousSelectedId);
+  selectChange(preservedIndex >= 0 ? preservedIndex : Math.min(previousSelectedIndex, Math.max(0, data.changeSet.changes.length - 1)), { scroll: firstChangeLoad });
+  return firstChangeLoad && data.changeSet.changes.length > 0;
 }
 
 $("#changePrevious").onclick = () => selectChange(selectedChangeIndex - 1);
@@ -774,7 +855,7 @@ $("#changesBtn").onclick = async () => {
   const button = $("#changesBtn");
   button.disabled = true;
   try {
-    const response = await fetch(`/api/changes?${documentQuery()}`);
+    const response = await fetch(`/api/changes?${documentQuery()}&version=${encodeURIComponent(state.version)}`);
     if (!response.ok) return;
     const data = await response.json();
     if (!data.available) { button.hidden = true; return; }

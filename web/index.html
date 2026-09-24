@@ -36,9 +36,9 @@
 <main>
   <article id="doc" class="markdown-body"></article>
   <aside id="rail">
-    <div id="railTabs" class="rail-tabs" hidden>
-      <button id="changeTab" type="button">Changes <span id="changeCount"></span></button>
-      <button id="commentTab" type="button">Comments <span id="count"></span></button>
+    <div id="railTabs" class="rail-tabs" role="group" aria-label="Review panel view" hidden>
+      <button id="changeTab" type="button" aria-pressed="false">Changes <span id="changeCount"></span></button>
+      <button id="commentTab" type="button" aria-pressed="true">Comments <span id="count"></span></button>
     </div>
     <h3 id="commentsHeading">Comments <span id="countFallback"></span></h3>
     <div id="changeCards" hidden></div>

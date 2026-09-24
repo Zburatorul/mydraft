@@ -8,6 +8,7 @@ export type ReviewChangeBlock = {
   blockId: string;
   index: number;
   head: string;
+  source: string;
 };
 
 export type ReviewChange = {
@@ -15,6 +16,7 @@ export type ReviewChange = {
   kind: ReviewChangeKind;
   before: ReviewChangeBlock | null;
   after: ReviewChangeBlock | null;
+  insertBeforeBlockId: string | null;
   summary: string;
   priorItemIds: string[];
   semanticChanges: ExplainerChange[];
@@ -45,6 +47,7 @@ function blockView(value: DescribedBlock): ReviewChangeBlock {
     blockId: value.block.id,
     index: value.block.index,
     head: value.source.split("\n")[0]!.slice(0, 80),
+    source: value.source,
   };
 }
 
@@ -69,7 +72,8 @@ function itemIdsInBlock(items: ReviewItem[], value: DescribedBlock): string[] {
 }
 
 function wordSimilarity(left: string, right: string): number {
-  const words = (value: string) => new Set(value.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+  const stopWords = new Set(["a", "an", "and", "as", "at", "by", "for", "from", "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "with"]);
+  const words = (value: string) => new Set((value.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter((word) => !stopWords.has(word)));
   const a = words(left), b = words(right);
   if (!a.size || !b.size) return 0;
   const intersection = [...a].filter((word) => b.has(word)).length;
@@ -117,17 +121,22 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
     const matchesKey = (candidate: DescribedBlock) => `${candidate.section}\0${candidate.block.type}` === key && !candidate.block.name;
     const beforeIndices = before.flatMap((candidate, index) => !beforeMatch.has(index) && matchesKey(candidate) ? [index] : []);
     const afterIndices = after.flatMap((candidate, index) => !afterMatch.has(index) && matchesKey(candidate) ? [index] : []);
-    if (beforeIndices.length === afterIndices.length) {
-      beforeIndices.forEach((beforeIndex, index) => pair(beforeIndex, afterIndices[index]!));
-      continue;
-    }
     const candidates = beforeIndices.flatMap((beforeIndex) => afterIndices.map((afterIndex) => ({
       beforeIndex,
       afterIndex,
       score: wordSimilarity(before[beforeIndex]!.source, after[afterIndex]!.source),
     }))).sort((left, right) => right.score - left.score);
     for (const candidate of candidates) {
-      if (candidate.score < .2 || beforeMatch.has(candidate.beforeIndex) || afterMatch.has(candidate.afterIndex)) continue;
+      if (candidate.score < .1 || beforeMatch.has(candidate.beforeIndex) || afterMatch.has(candidate.afterIndex)) continue;
+      const ambiguousBefore = candidates.some((other) => other.beforeIndex === candidate.beforeIndex
+        && other.afterIndex !== candidate.afterIndex
+        && !afterMatch.has(other.afterIndex)
+        && other.score >= candidate.score - .05);
+      const ambiguousAfter = candidates.some((other) => other.afterIndex === candidate.afterIndex
+        && other.beforeIndex !== candidate.beforeIndex
+        && !beforeMatch.has(other.beforeIndex)
+        && other.score >= candidate.score - .05);
+      if (ambiguousBefore || ambiguousAfter) continue;
       pair(candidate.beforeIndex, candidate.afterIndex);
     }
   }
@@ -140,7 +149,7 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
     return typeof beforeSource === "string" && typeof afterSource === "string" ? diffExplainers(beforeSource, afterSource) : [];
   };
 
-  const changes: ReviewChange[] = [];
+  const ordered: Array<{ change: ReviewChange; position: number; tie: number }> = [];
   const unchangedAfterBlockIds: string[] = [];
   for (let j = 0; j < after.length; j++) {
     const i = afterMatch.get(j);
@@ -149,41 +158,50 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
       unchangedAfterBlockIds.push(after[j]!.block.id);
       continue;
     }
-    changes.push({
-      id: "",
+    ordered.push({ change: {
+      id: `change-modified-${after[j]!.block.id}`,
       kind: "modified",
       before: blockView(before[i]!),
       after: blockView(after[j]!),
+      insertBeforeBlockId: null,
       summary: summary(after[j]!),
       priorItemIds: itemIdsInBlock(beforeDoc.items, before[i]!),
       semanticChanges: semanticFor(before[i]!.block.id, after[j]!.block.id),
-    });
+    }, position: j, tie: j });
   }
   for (let i = 0; i < before.length; i++) {
     if (beforeMatch.has(i)) continue;
-    changes.push({
-      id: "",
+    const previousMatched = before.slice(0, i).map((_, index) => index).reverse().find((index) => beforeMatch.has(index));
+    const nextMatchedOffset = before.slice(i + 1).findIndex((_, offset) => beforeMatch.has(i + 1 + offset));
+    const nextMatched = nextMatchedOffset < 0 ? undefined : i + 1 + nextMatchedOffset;
+    const insertionIndex = previousMatched !== undefined
+      ? (beforeMatch.get(previousMatched) ?? -1) + 1
+      : nextMatched !== undefined ? beforeMatch.get(nextMatched) ?? 0 : 0;
+    ordered.push({ change: {
+      id: `change-removed-${before[i]!.block.id}`,
       kind: "removed",
       before: blockView(before[i]!),
       after: null,
+      insertBeforeBlockId: after[insertionIndex]?.block.id ?? null,
       summary: summary(before[i]!),
       priorItemIds: itemIdsInBlock(beforeDoc.items, before[i]!),
       semanticChanges: semanticFor(before[i]!.block.id, null),
-    });
+    }, position: insertionIndex - .5, tie: i });
   }
   for (let j = 0; j < after.length; j++) {
     if (afterMatch.has(j)) continue;
-    changes.push({
-      id: "",
+    ordered.push({ change: {
+      id: `change-added-${after[j]!.block.id}`,
       kind: "added",
       before: null,
       after: blockView(after[j]!),
+      insertBeforeBlockId: null,
       summary: summary(after[j]!),
       priorItemIds: [],
       semanticChanges: semanticFor(null, after[j]!.block.id),
-    });
+    }, position: j, tie: j });
   }
 
-  changes.forEach((change, index) => { change.id = `change-${index + 1}`; });
+  const changes = ordered.sort((left, right) => left.position - right.position || left.tie - right.tie).map(({ change }) => change);
   return { changes, unchangedAfterBlockIds };
 }

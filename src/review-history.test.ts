@@ -47,4 +47,24 @@ describe("ReviewHistory", () => {
     expect(() => history.link({ reviewId: "review-new", predecessorReviewId: "review-old", path: "/docs/two.md" }))
       .toThrow("Predecessor review belongs to a different document.");
   });
+
+  test("a completed snapshot is immutable and exact retries are idempotent", () => {
+    let saves = 0;
+    const history = new ReviewHistory({ persist: () => { saves += 1; } });
+    const archive = {
+      reviewId: "review-old",
+      path: "/docs/plan.md",
+      title: "plan.md",
+      version: "version-old",
+      source: "# Frozen\n",
+      completedAt: "2026-09-23T18:00:00.000Z",
+      revision: null,
+    };
+    history.complete(archive);
+    history.complete({ ...archive });
+
+    expect(saves).toBe(1);
+    expect(() => history.complete({ ...archive, source: "# Replaced\n" })).toThrow("already frozen");
+    expect(history.archive("review-old")?.source).toBe("# Frozen\n");
+  });
 });

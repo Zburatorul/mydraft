@@ -251,6 +251,9 @@ switch (cmd) {
   case "status": { const s = await serverAlive(); const origin = s ? publicOriginOf(s) : null; out(s ?? { running: false }, s ? `running on port ${s.port} (pid ${s.pid})${origin ? `\npublic review origin ${origin}` : ""}` : "not running"); break; }
   case "stop": { const s = await serverAlive(); if (s) { try { process.kill(s.pid); } catch {} } out({ stopped: !!s }, s ? "stopped" : "not running"); break; }
   case "view": {
+    if (flags["from-review"] === true || (typeof flags["from-review"] === "string" && !flags["from-review"].trim())) {
+      die("--from-review requires a review ID");
+    }
     const file = abs(pos[0]);
     // Preflight before the server is even started: a document that cannot open as a coherent
     // review should not become one. Mermaid is loaded only when the document contains a Mermaid

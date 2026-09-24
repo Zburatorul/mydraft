@@ -47,6 +47,11 @@ export class ReviewHistory {
   }
 
   complete(archive: ArchivedReview): void {
+    const existing = this.archives.get(archive.reviewId);
+    if (existing) {
+      if (JSON.stringify(existing) === JSON.stringify(archive)) return;
+      throw new Error(`Review ${archive.reviewId} is already frozen.`);
+    }
     this.archives.set(archive.reviewId, { ...archive, revision: archive.revision ? { ...archive.revision } : null });
     this.save();
   }

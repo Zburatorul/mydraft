@@ -168,6 +168,13 @@ describe("unknown commands", () => {
 });
 
 describe("the CLI entry points", () => {
+  test("view rejects --from-review without its required review id before doing any work", async () => {
+    const result = await myd("view", "missing.md", "--from-review");
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--from-review requires a review ID");
+    expect(result.stderr).not.toContain("could not start myd server");
+  });
+
   test("`myd help <cmd>` and `myd <cmd> --help` render the same page", async () => {
     for (const name of ["view", "set-block", "comments"]) {
       const viaHelp = await myd("help", name);

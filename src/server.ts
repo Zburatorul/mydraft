@@ -286,6 +286,10 @@ export function startServer(port = 7474, options: { publicUrl?: string | null } 
         }
         if (p === "/api/changes") {
           const doc = readDocFor(url.searchParams.get("path"), url.searchParams.get("review"));
+          const expectedVersion = url.searchParams.get("version");
+          if (expectedVersion && expectedVersion !== doc.version) {
+            return json({ error: "Document changed before its comparison was loaded.", currentVersion: doc.version }, 409);
+          }
           const reviewId = url.searchParams.get("review");
           const reviewComparison = reviewId ? reviewHistory.comparison(reviewId, doc.source) : null;
           if (reviewComparison) {

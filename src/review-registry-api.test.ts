@@ -256,6 +256,9 @@ describe("durable review registry API", () => {
       },
     });
 
+    const staleComparison = await fetch(`${baseUrl}/api/changes?review=${encodeURIComponent(successor.reviewId)}&version=not-the-rendered-version`);
+    expect(staleComparison.status).toBe(409);
+
     await stopServer();
     await startServer();
     const restored = await (await fetch(`${baseUrl}/api/changes?review=${encodeURIComponent(successor.reviewId)}`)).json() as { mode: string; predecessorReviewId: string };
