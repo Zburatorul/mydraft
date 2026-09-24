@@ -56,6 +56,7 @@ html[data-review-mode="changes"] #doc > [data-change-stable="true"]:hover,
 html[data-review-mode="changes"] #doc > [data-change-stable="true"]:focus-within { opacity: 1; }
 html[data-review-mode="changes"] #doc > [data-change-collapsed="true"] { display: none; }
 .unchanged-run-toggle { display: block; width: 100%; margin: 14px 0; border-style: dashed; color: var(--muted); background: var(--bg); }
+.unchanged-run-anchor { display: block; height: 0; }
 html[data-review-mode="document"] .unchanged-run-toggle { display: none; }
 html[data-review-mode="changes"] #doc > [data-change-id] { position: relative; margin-inline: -14px; padding: 12px 14px 12px 20px; border-radius: 8px; background: color-mix(in srgb, #7c3aed 7%, var(--panel)); box-shadow: inset 5px 0 #7c3aed; }
 html[data-review-mode="changes"] #doc > [data-change-kind="added"] { background: color-mix(in srgb, #10b981 8%, var(--panel)); box-shadow: inset 5px 0 #159467; }

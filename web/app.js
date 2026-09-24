@@ -595,7 +595,7 @@ function setChangeMode(enabled) {
   if (selected?.kind === "removed" && anchor) {
     const visibleDocumentNeighbor = (direction) => {
       let candidate = anchor[direction];
-      while (candidate && (!candidate.matches?.("[data-bid]") || candidate.getClientRects().length === 0)) candidate = candidate[direction];
+      while (candidate && (!candidate.matches?.("[data-bid], [data-change-position-anchor]") || candidate.getClientRects().length === 0)) candidate = candidate[direction];
       return candidate;
     };
     anchor = visibleDocumentNeighbor("nextElementSibling") ?? visibleDocumentNeighbor("previousElementSibling") ?? anchor;
@@ -674,6 +674,7 @@ function applyRenderedChanges(changeSet) {
   docEl.querySelectorAll(".change-tombstone").forEach((element) => element.remove());
   docEl.querySelectorAll(".change-context-link").forEach((element) => element.remove());
   docEl.querySelectorAll(".unchanged-run-toggle").forEach((element) => element.remove());
+  docEl.querySelectorAll(".unchanged-run-anchor").forEach((element) => element.remove());
 
   const stable = new Set(changeSet.unchangedAfterBlockIds);
   for (const element of docEl.querySelectorAll(":scope > [data-bid]")) {
@@ -746,6 +747,11 @@ function applyRenderedChanges(changeSet) {
       toggle.textContent = expanded ? `Show ${run.length} unchanged regions` : `Hide ${run.length} unchanged regions`;
     };
     docEl.insertBefore(toggle, run[0]);
+    const positionAnchor = document.createElement("span");
+    positionAnchor.className = "unchanged-run-anchor";
+    positionAnchor.dataset.changePositionAnchor = "true";
+    positionAnchor.setAttribute("aria-hidden", "true");
+    run.at(-1).after(positionAnchor);
   };
   for (const element of docEl.querySelectorAll(":scope > [data-bid]")) {
     if (element.dataset.changeStable === "true") stableRun.push(element);
