@@ -2,8 +2,14 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { chromium, type Browser, type Page } from "playwright";
+import { chromium, type Browser, type Locator, type Page } from "playwright";
 import { loadDoc } from "./doc.ts";
+
+declare global {
+  interface Window {
+    __editablePointerRegression: { cleanups: number; beforeinput: number; input: number };
+  }
+}
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const SOURCE = "Review [the plan](https://example.com) carefully.\n";
@@ -56,7 +62,7 @@ async function trackedPage(name: string, source = SOURCE, viewport?: { width: nu
   return { fixture, page };
 }
 
-async function selectAcrossLink(page: Page) {
+async function selectAcrossLink(page: Page, waitForPopover = true) {
   await page.evaluate(() => {
     const link = document.querySelector<HTMLAnchorElement>("#doc a")!;
     const paragraph = link.closest("p")!;
@@ -70,7 +76,28 @@ async function selectAcrossLink(page: Page) {
     selection.addRange(range);
     document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
   });
-  await page.locator("#popover").waitFor({ state: "visible" });
+  if (waitForPopover) await page.locator("#popover").waitFor({ state: "visible" });
+}
+
+async function pointerSelectionBeforeRelease(page: Page, field: Locator, options: { from?: number; to?: number; y?: number } = {}) {
+  const from = options.from ?? .55;
+  const to = options.to ?? from;
+  const y = options.y ?? .5;
+  const box = (await field.boundingBox())!;
+  await page.mouse.move(box.x + box.width * from, box.y + box.height * y);
+  await page.mouse.down();
+  if (to !== from) await page.mouse.move(box.x + box.width * to, box.y + box.height * y, { steps: 5 });
+  const beforeRelease = await field.evaluate((element) => {
+    const editable = element as HTMLInputElement | HTMLTextAreaElement;
+    return { start: editable.selectionStart!, end: editable.selectionEnd! };
+  });
+  await page.mouse.up();
+  await page.waitForTimeout(20);
+  expect(await field.evaluate((element) => {
+    const editable = element as HTMLInputElement | HTMLTextAreaElement;
+    return { start: editable.selectionStart!, end: editable.selectionEnd! };
+  })).toEqual(beforeRelease);
+  return beforeRelease;
 }
 
 beforeAll(async () => {
@@ -128,6 +155,107 @@ describe("cross-element annotation in a real browser", () => {
     expect(await page.locator("#editor").isVisible()).toBeTrue();
     expect(await page.locator("#edBody").inputValue()).toBe("Do not lose this draft.");
     expect(await page.locator("#edError").textContent()).toBe("Selection cannot map inline.");
+
+    await page.unroute("**/api/annotate");
+    let attempts = 0;
+    await page.route("**/api/annotate", async (route) => {
+      attempts += 1;
+      await Bun.sleep(200);
+      await route.fulfill({ status: 500, body: "unavailable" });
+    });
+    const failed = page.waitForResponse((response) => response.url().endsWith("/api/annotate") && response.status() === 500);
+    await page.locator("#edSave").evaluate((button) => { (button as HTMLButtonElement).click(); (button as HTMLButtonElement).click(); });
+    await failed;
+    expect(attempts).toBe(1);
+    expect(await page.locator("#edBody").inputValue()).toBe("Do not lose this draft.");
+    expect(await page.locator("#edError").textContent()).toBe("Failed to save annotation");
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
+  test("cancel and successful save return focus to the document target", async () => {
+    const { page } = await trackedPage("annotation-focus-return.md", SOURCE, { width: 1400, height: 900 });
+    await selectAcrossLink(page);
+    await page.locator('#popover [data-act="comment"]').click();
+    expect(await page.locator("#edBody").evaluate((field) => field === document.activeElement)).toBeTrue();
+    await page.locator("#edCancel").click();
+    expect(await page.locator("#doc p").evaluate((paragraph) => paragraph === document.activeElement)).toBeTrue();
+
+    await selectAcrossLink(page);
+    await page.locator('#popover [data-act="comment"]').click();
+    await page.locator("#edBody").fill("Return to this paragraph.");
+    await page.route("**/api/doc?*", async (route) => {
+      await Bun.sleep(2_300);
+      await route.continue();
+    }, { times: 1 });
+    const saved = page.waitForResponse((response) => response.url().endsWith("/api/annotate") && response.request().method() === "POST");
+    const reloaded = page.waitForResponse((response) => response.url().includes("/api/doc?") && response.request().method() === "GET");
+    await page.locator("#edSave").click();
+    expect((await saved).status()).toBe(200);
+    await reloaded;
+    await page.waitForFunction(() => document.activeElement?.matches("#doc [data-pos]"));
+    expect(await page.locator("#doc p").evaluate((paragraph) => paragraph === document.activeElement)).toBeTrue();
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
+  test("editable pointer releases never invoke annotation selection cleanup", async () => {
+    const { page } = await trackedPage("editable-pointer-release.md", SOURCE, { width: 1400, height: 900 });
+    await selectAcrossLink(page);
+    await page.locator('#popover [data-act="comment"]').click();
+    await page.locator("#edBody").fill("Comment that needs a reply.");
+    const saved = page.waitForResponse((response) => response.url().endsWith("/api/annotate") && response.request().method() === "POST");
+    await page.locator("#edSave").click();
+    expect((await saved).status()).toBe(200);
+
+    await page.locator(".replyForm input").first().waitFor();
+    await page.evaluate(() => {
+      const instrumentation = { cleanups: 0, beforeinput: 0, input: 0 };
+      Object.defineProperty(window, "__editablePointerRegression", { value: instrumentation });
+      const original = Selection.prototype.removeAllRanges;
+      Selection.prototype.removeAllRanges = function removeAllRanges() {
+        instrumentation.cleanups += 1;
+        return original.call(this);
+      };
+      document.addEventListener("beforeinput", () => { instrumentation.beforeinput += 1; }, true);
+      document.addEventListener("input", () => { instrumentation.input += 1; }, true);
+    });
+
+    const reply = page.locator(".replyForm input").first();
+    await reply.fill("Reply survives");
+    await page.evaluate(() => {
+      window.__editablePointerRegression.beforeinput = 0;
+      window.__editablePointerRegression.input = 0;
+    });
+    const replySelectionBeforeRelease = await pointerSelectionBeforeRelease(page, reply, { from: .2, to: .75 });
+    expect(replySelectionBeforeRelease.end).toBeGreaterThan(replySelectionBeforeRelease.start);
+    await page.keyboard.type("X");
+    expect(await reply.inputValue()).toBe(`Reply survives`.slice(0, replySelectionBeforeRelease.start) + "X" + `Reply survives`.slice(replySelectionBeforeRelease.end));
+    expect(await page.evaluate(() => window.__editablePointerRegression)).toEqual({
+      cleanups: 0,
+      beforeinput: 1,
+      input: 1,
+    });
+
+    await page.locator("#doneBtn").click();
+    await page.evaluate(() => {
+      window.__editablePointerRegression.cleanups = 0;
+      window.__editablePointerRegression.beforeinput = 0;
+      window.__editablePointerRegression.input = 0;
+    });
+    const note = page.locator("#doneNote");
+    await note.fill("Done survives");
+    await page.evaluate(() => {
+      window.__editablePointerRegression.beforeinput = 0;
+      window.__editablePointerRegression.input = 0;
+    });
+    const noteCaretBeforeRelease = await pointerSelectionBeforeRelease(page, note, { y: .2 });
+    await page.keyboard.type("X");
+    expect(await note.inputValue()).toBe(`Done survives`.slice(0, noteCaretBeforeRelease.start) + "X" + `Done survives`.slice(noteCaretBeforeRelease.end));
+    expect(await page.evaluate(() => window.__editablePointerRegression)).toEqual({
+      cleanups: 0,
+      beforeinput: 1,
+      input: 1,
+    });
+
     await page.close();
   }, E2E_TIMEOUT_MS);
 
@@ -188,7 +316,7 @@ describe("cross-element annotation in a real browser", () => {
     await page.close();
   }, E2E_TIMEOUT_MS);
 
-  test("a comment draft keeps focus and its text across a live document refresh", async () => {
+  test("a live document refresh preserves a comment draft but requires target reselection", async () => {
     const { fixture, page } = await trackedPage("comment-focus.md", SOURCE, { width: 1400, height: 900 });
     await selectAcrossLink(page);
     await page.locator('#popover [data-act="comment"]').click();
@@ -203,6 +331,65 @@ describe("cross-element annotation in a real browser", () => {
 
     expect(await comment.evaluate((textarea) => textarea === document.activeElement)).toBeTrue();
     expect(await comment.inputValue()).toBe("Keep this comment draft");
+    expect(await page.locator("#edStale").textContent()).toContain("Document changed");
+    expect(await page.locator("#edSave").isDisabled()).toBeTrue();
+
+    await page.locator("#edReselect").click();
+    expect(await page.locator("#edStale").textContent()).toContain("Select the target again");
+    await selectAcrossLink(page, false);
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>("#edSave")!.disabled);
+    expect(await page.locator("#edSave").isEnabled()).toBeTrue();
+    expect(await page.locator("#edStale").isHidden()).toBeTrue();
+    expect(await comment.inputValue()).toBe("Keep this comment draft");
+
+    const saved = page.waitForResponse((response) => response.url().endsWith("/api/annotate") && response.request().method() === "POST");
+    await page.locator("#edSave").click();
+    expect((await saved).status()).toBe(200);
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
+  test("a live document refresh also invalidates an object target without losing its draft", async () => {
+    const source = [
+      "# Object review",
+      "",
+      "```explainer {#object-review}",
+      "title: One event",
+      "sections:",
+      "  - type: timing",
+      "    id: handoff",
+      "    parties: [Human]",
+      "    events:",
+      "      - id: inspect",
+      "        party: Human",
+      "        observes: a draft",
+      "        action: review it",
+      "        locality: local",
+      "        synchronization: communicated",
+      "```",
+      "",
+    ].join("\n");
+    const { fixture, page } = await trackedPage("stale-object.md", source, { width: 1400, height: 900 });
+    const object = page.locator(".timing-event").first();
+    await object.click();
+    await page.locator("#edBody").fill("Keep this object comment.");
+
+    const reloaded = page.waitForResponse((response) => response.url().includes("/api/doc?") && response.request().method() === "GET");
+    fs.appendFileSync(fixture, "\n");
+    await reloaded;
+
+    expect(await page.locator("#edBody").inputValue()).toBe("Keep this object comment.");
+    expect(await page.locator("#edStale").textContent()).toContain("Document changed");
+    expect(await page.locator("#edSave").isDisabled()).toBeTrue();
+
+    await page.locator("#edReselect").click();
+    await object.click();
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>("#edSave")!.disabled);
+    expect(await page.locator("#edBody").inputValue()).toBe("Keep this object comment.");
+    expect(await page.locator("#edStale").isHidden()).toBeTrue();
+
+    const saved = page.waitForResponse((response) => response.url().endsWith("/api/annotate-object") && response.request().method() === "POST");
+    await page.locator("#edSave").click();
+    expect((await saved).status()).toBe(200);
     await page.close();
   }, E2E_TIMEOUT_MS);
 

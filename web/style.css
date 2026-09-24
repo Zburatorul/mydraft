@@ -168,6 +168,10 @@ main.rail-closed { grid-template-columns: minmax(0, 1fr); }
 #editor { position: absolute; z-index: 11; width: min(420px, 90vw); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.18); font-size: 13px; }
 #editor textarea { width: 100%; font: inherit; font-size: 14px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); margin: 6px 0; resize: vertical; }
 #editor .editor-error { margin: 2px 0 8px; color: var(--danger, #b42318); font-size: 12px; }
+#editor .editor-stale { display: flex; align-items: center; gap: 8px; margin: 4px 0 8px; padding: 7px 8px; border-radius: 6px; background: color-mix(in srgb, #d97706 12%, var(--panel)); color: var(--fg); font-size: 12px; }
+#editor .editor-stale[hidden] { display: none; }
+#editor .editor-stale span { flex: 1; }
+#editor .editor-stale button { white-space: nowrap; }
 #editor .row { display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
 #editor .hint { color: var(--muted); font-size: 11px; margin-right: auto; }
 #popover { position: absolute; z-index: 10; display: flex; gap: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px; box-shadow: 0 6px 20px rgba(0,0,0,.15); }
