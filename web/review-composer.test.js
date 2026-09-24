@@ -244,7 +244,8 @@ describe("ReviewComposer submission lifecycle", () => {
     expect(await composer.submit()).toBe(false);
     expect(composer.state).toMatchObject({
       phase: "error",
-      error: "Document changed. Could not reload the latest document.",
+      targetStatus: "stale",
+      error: "Document changed. Could not reload the latest document. Reload the page, then reselect the target.",
       draft: { body: "Keep this through the conflict.", replacement: "" },
     });
   });

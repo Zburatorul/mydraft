@@ -127,7 +127,12 @@ export class ReviewComposer {
         try {
           await this.#reload();
         } catch {
-          this.#set({ ...this.#state, phase: "error", error: `${outcome.error || "Document changed."} Could not reload the latest document.` });
+          this.#set({
+            ...this.#state,
+            phase: "error",
+            targetStatus: "stale",
+            error: `${outcome.error || "Document changed."} Could not reload the latest document. Reload the page, then reselect the target.`,
+          });
           return false;
         }
       }
