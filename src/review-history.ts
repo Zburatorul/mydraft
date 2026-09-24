@@ -57,8 +57,11 @@ export class ReviewHistory {
       if (sameFrozenContent) return;
       throw new Error(`Review ${archive.reviewId} is already frozen.`);
     }
-    this.archives.set(archive.reviewId, { ...archive, revision: archive.revision ? { ...archive.revision } : null });
-    this.save();
+    const frozen = { ...archive, revision: archive.revision ? { ...archive.revision } : null };
+    const snapshot = this.snapshot();
+    snapshot.archives[archive.reviewId] = frozen;
+    this.persist(snapshot);
+    this.archives.set(archive.reviewId, frozen);
   }
 
   link(input: { reviewId: string; predecessorReviewId: string; path: string }): void {

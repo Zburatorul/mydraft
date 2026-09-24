@@ -31,6 +31,7 @@ type DescribedBlock = {
   block: Block;
   source: string;
   section: string;
+  sectionIndex: number | null;
   words: Set<string>;
 };
 
@@ -48,10 +49,14 @@ function wordTokens(value: string): Set<string> {
 
 function describeBlocks(doc: Doc): DescribedBlock[] {
   let section = "document";
-  return topBlocks(doc).map((block) => {
+  let sectionIndex: number | null = null;
+  return topBlocks(doc).map((block, index) => {
     const source = doc.clean.slice(doc.origToClean(block.start), doc.origToClean(block.end)).trimEnd();
-    if (block.type.startsWith("h")) section = block.name ?? source.replace(/^#{1,6}\s+/, "").replace(/\s+\{#[^}]+\}\s*$/, "");
-    return { block, source, section, words: wordTokens(source) };
+    if (block.type.startsWith("h")) {
+      section = block.name ?? source.replace(/^#{1,6}\s+/, "").replace(/\s+\{#[^}]+\}\s*$/, "");
+      sectionIndex = index;
+    }
+    return { block, source, section, sectionIndex, words: wordTokens(source) };
   });
 }
 
@@ -90,6 +95,25 @@ function wordSimilarity(left: Set<string>, right: Set<string>): number {
   return intersection / new Set([...left, ...right]).size;
 }
 
+function movedBeforeIndices(matchedPairs: Array<[number, number]>): Set<number> {
+  const tails: number[] = [];
+  const previous = new Array<number>(matchedPairs.length).fill(-1);
+  for (let index = 0; index < matchedPairs.length; index++) {
+    const afterIndex = matchedPairs[index]![1];
+    let low = 0, high = tails.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (matchedPairs[tails[middle]!]![1] < afterIndex) low = middle + 1;
+      else high = middle;
+    }
+    if (low > 0) previous[index] = tails[low - 1]!;
+    tails[low] = index;
+  }
+  const stable = new Set<number>();
+  for (let index = tails.at(-1) ?? -1; index >= 0; index = previous[index]!) stable.add(index);
+  return new Set(matchedPairs.flatMap(([beforeIndex], index) => stable.has(index) ? [] : [beforeIndex]));
+}
+
 export function buildReviewChangeSet(input: { beforeSource: string; afterSource: string }): ReviewChangeSet {
   const beforeDoc = loadDoc("before.md", input.beforeSource);
   const afterDoc = loadDoc("after.md", input.afterSource);
@@ -102,6 +126,25 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
   const pair = (beforeIndex: number, afterIndex: number) => {
     beforeMatch.set(beforeIndex, afterIndex);
     afterMatch.set(afterIndex, beforeIndex);
+  };
+  const pairSimilar = (beforeIndices: number[], afterIndices: number[]) => {
+    const candidates = beforeIndices.flatMap((beforeIndex) => afterIndices.map((afterIndex) => ({
+      beforeIndex,
+      afterIndex,
+      score: wordSimilarity(before[beforeIndex]!.words, after[afterIndex]!.words),
+    }))).sort((left, right) => right.score - left.score);
+    for (const candidate of candidates) {
+      if (candidate.score < .3 || beforeMatch.has(candidate.beforeIndex) || afterMatch.has(candidate.afterIndex)) continue;
+      const ambiguousBefore = candidates.some((other) => other.beforeIndex === candidate.beforeIndex
+        && other.afterIndex !== candidate.afterIndex
+        && !afterMatch.has(other.afterIndex)
+        && other.score >= candidate.score - .05);
+      const ambiguousAfter = candidates.some((other) => other.afterIndex === candidate.afterIndex
+        && other.beforeIndex !== candidate.beforeIndex
+        && !beforeMatch.has(other.beforeIndex)
+        && other.score >= candidate.score - .05);
+      if (!ambiguousBefore && !ambiguousAfter) pair(candidate.beforeIndex, candidate.afterIndex);
+    }
   };
 
   // Authored names are the strongest identity and survive content changes and movement.
@@ -132,51 +175,58 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
     const matchesKey = (candidate: DescribedBlock) => `${candidate.section}\0${candidate.block.type}` === key && !candidate.block.name;
     const beforeIndices = before.flatMap((candidate, index) => !beforeMatch.has(index) && matchesKey(candidate) ? [index] : []);
     const afterIndices = after.flatMap((candidate, index) => !afterMatch.has(index) && matchesKey(candidate) ? [index] : []);
-    const candidates = beforeIndices.flatMap((beforeIndex) => afterIndices.map((afterIndex) => ({
-      beforeIndex,
-      afterIndex,
-      score: wordSimilarity(before[beforeIndex]!.words, after[afterIndex]!.words),
-    }))).sort((left, right) => right.score - left.score);
-    for (const candidate of candidates) {
-      if (candidate.score < .3 || beforeMatch.has(candidate.beforeIndex) || afterMatch.has(candidate.afterIndex)) continue;
-      const ambiguousBefore = candidates.some((other) => other.beforeIndex === candidate.beforeIndex
-        && other.afterIndex !== candidate.afterIndex
-        && !afterMatch.has(other.afterIndex)
-        && other.score >= candidate.score - .05);
-      const ambiguousAfter = candidates.some((other) => other.afterIndex === candidate.afterIndex
-        && other.beforeIndex !== candidate.beforeIndex
-        && !beforeMatch.has(other.beforeIndex)
-        && other.score >= candidate.score - .05);
-      if (ambiguousBefore || ambiguousAfter) continue;
-      pair(candidate.beforeIndex, candidate.afterIndex);
+    pairSimilar(beforeIndices, afterIndices);
+  }
+
+  // Pair one renamed heading only when the same matched headings bracket it on both sides. This
+  // admits a lexically unrelated retitle while keeping deleted/new sections in different parts of
+  // the document separate. Multiple unmatched headings in one bracket remain ambiguous.
+  const nearestMatchedHeadingAfter = (index: number, direction: -1 | 1): number => {
+    for (let cursor = index + direction; cursor >= 0 && cursor < before.length; cursor += direction) {
+      const matched = beforeMatch.get(cursor);
+      if (matched !== undefined && before[cursor]!.block.type.startsWith("h") && after[matched]!.block.type.startsWith("h")) return matched;
+    }
+    return direction < 0 ? -1 : after.length;
+  };
+  const nearestMatchedHeading = (index: number, direction: -1 | 1): number => {
+    for (let cursor = index + direction; cursor >= 0 && cursor < after.length; cursor += direction) {
+      if (afterMatch.has(cursor) && after[cursor]!.block.type.startsWith("h")) return cursor;
+    }
+    return direction < 0 ? -1 : after.length;
+  };
+  const beforeHeadingGroups = new Map<string, number[]>();
+  const afterHeadingGroups = new Map<string, number[]>();
+  for (let i = 0; i < before.length; i++) {
+    if (beforeMatch.has(i) || before[i]!.block.name || !before[i]!.block.type.startsWith("h")) continue;
+    const key = `${nearestMatchedHeadingAfter(i, -1)}\0${nearestMatchedHeadingAfter(i, 1)}`;
+    beforeHeadingGroups.set(key, [...beforeHeadingGroups.get(key) ?? [], i]);
+  }
+  for (let j = 0; j < after.length; j++) {
+    if (afterMatch.has(j) || after[j]!.block.name || !after[j]!.block.type.startsWith("h")) continue;
+    const key = `${nearestMatchedHeading(j, -1)}\0${nearestMatchedHeading(j, 1)}`;
+    afterHeadingGroups.set(key, [...afterHeadingGroups.get(key) ?? [], j]);
+  }
+  for (const [key, beforeIndices] of beforeHeadingGroups) {
+    const afterIndices = afterHeadingGroups.get(key) ?? [];
+    if (beforeIndices.length === 1 && afterIndices.length === 1
+      && before[beforeIndices[0]!]!.block.type === after[afterIndices[0]!]!.block.type) {
+      pair(beforeIndices[0]!, afterIndices[0]!);
     }
   }
 
-  // A heading rename changes the textual section key for every block beneath it. Once the
-  // high-confidence same-section pass is exhausted, allow conservative whole-document matches
-  // by block type so an ordinary retitle does not turn one edited section into deletions/additions.
-  const remainingTypes = new Set(before
-    .filter((candidate, index) => !beforeMatch.has(index) && !candidate.block.name)
-    .map((candidate) => candidate.block.type));
-  for (const type of remainingTypes) {
-    const beforeIndices = before.flatMap((candidate, index) => !beforeMatch.has(index) && !candidate.block.name && candidate.block.type === type ? [index] : []);
-    const afterIndices = after.flatMap((candidate, index) => !afterMatch.has(index) && !candidate.block.name && candidate.block.type === type ? [index] : []);
-    const candidates = beforeIndices.flatMap((beforeIndex) => afterIndices.map((afterIndex) => ({
-      beforeIndex,
-      afterIndex,
-      score: wordSimilarity(before[beforeIndex]!.words, after[afterIndex]!.words),
-    }))).sort((left, right) => right.score - left.score);
-    for (const candidate of candidates) {
-      if (candidate.score < .3 || beforeMatch.has(candidate.beforeIndex) || afterMatch.has(candidate.afterIndex)) continue;
-      const ambiguousBefore = candidates.some((other) => other.beforeIndex === candidate.beforeIndex
-        && other.afterIndex !== candidate.afterIndex
-        && !afterMatch.has(other.afterIndex)
-        && other.score >= candidate.score - .05);
-      const ambiguousAfter = candidates.some((other) => other.afterIndex === candidate.afterIndex
-        && other.beforeIndex !== candidate.beforeIndex
-        && !beforeMatch.has(other.beforeIndex)
-        && other.score >= candidate.score - .05);
-      if (!ambiguousBefore && !ambiguousAfter) pair(candidate.beforeIndex, candidate.afterIndex);
+  // Once headings are paired, fuzzy-match only inside those corresponding sections. This keeps
+  // prior feedback from jumping to similar prose under an unrelated new heading.
+  for (const [beforeHeading, afterHeading] of [...beforeMatch]) {
+    if (!before[beforeHeading]!.block.type.startsWith("h") || !after[afterHeading]!.block.type.startsWith("h")) continue;
+    const types = new Set(before
+      .filter((candidate, index) => !beforeMatch.has(index) && !candidate.block.name && candidate.sectionIndex === beforeHeading)
+      .map((candidate) => candidate.block.type));
+    for (const type of types) {
+      const beforeIndices = before.flatMap((candidate, index) => !beforeMatch.has(index) && !candidate.block.name
+        && candidate.sectionIndex === beforeHeading && candidate.block.type === type ? [index] : []);
+      const afterIndices = after.flatMap((candidate, index) => !afterMatch.has(index) && !candidate.block.name
+        && candidate.sectionIndex === afterHeading && candidate.block.type === type ? [index] : []);
+      pairSimilar(beforeIndices, afterIndices);
     }
   }
 
@@ -190,15 +240,8 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
 
   const ordered: Array<{ change: ReviewChange; position: number; tie: number }> = [];
   const unchangedAfterBlockIds: string[] = [];
-  const reorderedBeforeIndices = new Set<number>();
   const matchedPairs = [...beforeMatch.entries()].sort(([left], [right]) => left - right);
-  for (let left = 0; left < matchedPairs.length; left++) {
-    for (let right = left + 1; right < matchedPairs.length; right++) {
-      if (matchedPairs[left]![1] <= matchedPairs[right]![1]) continue;
-      reorderedBeforeIndices.add(matchedPairs[left]![0]);
-      reorderedBeforeIndices.add(matchedPairs[right]![0]);
-    }
-  }
+  const reorderedBeforeIndices = movedBeforeIndices(matchedPairs);
   for (let j = 0; j < after.length; j++) {
     const i = afterMatch.get(j);
     if (i === undefined) continue;

@@ -247,21 +247,28 @@ describe("ReviewChangeSet", () => {
 
     const changeSet = buildReviewChangeSet({ beforeSource: before, afterSource: after });
     expect(changeSet.changes.map((change) => `${change.kind}:${change.summary}`)).toEqual([
-      "moved:B",
-      "moved:Beta text here.",
       "moved:A",
       "moved:Alpha text here.",
     ]);
-    expect(changeSet.unchangedAfterBlockIds).toEqual(["b0"]);
+    expect(changeSet.unchangedAfterBlockIds).toEqual(["b0", "b1", "b2"]);
   });
 
-  test("a renamed heading keeps its edited section paired as modifications", () => {
+  test("moving one block does not mark the stable run it crossed as moved", () => {
+    const before = "# Doc\n\nAlpha.\n\nBeta.\n\nGamma.\n\nDelta.\n";
+    const after = "# Doc\n\nDelta.\n\nAlpha.\n\nBeta.\n\nGamma.\n";
+
+    const changeSet = buildReviewChangeSet({ beforeSource: before, afterSource: after });
+    expect(changeSet.changes.map((change) => `${change.kind}:${change.summary}`)).toEqual(["moved:Delta."]);
+    expect(changeSet.unchangedAfterBlockIds).toEqual(["b0", "b2", "b3", "b4"]);
+  });
+
+  test("a lexically different heading keeps its edited section paired as modifications", () => {
     const before = "# Doc\n\n## Rollout plan\n\nWe ship the migration on Monday after the freeze ends.\n\n## Risks\n\nNone known.\n";
-    const after = "# Doc\n\n## Launch plan\n\nWe ship the migration on Tuesday after the freeze ends.\n\n## Risks\n\nNone known.\n";
+    const after = "# Doc\n\n## Deployment schedule\n\nWe ship the migration on Tuesday after the freeze ends.\n\n## Risks\n\nNone known.\n";
 
     const changeSet = buildReviewChangeSet({ beforeSource: before, afterSource: after });
     expect(changeSet.changes.map((change) => `${change.kind}:${change.summary}`)).toEqual([
-      "modified:Launch plan",
+      "modified:Deployment schedule",
       "modified:We ship the migration on Tuesday after the freeze ends.",
     ]);
     expect(changeSet.unchangedAfterBlockIds).toEqual(["b0", "b3", "b4"]);
@@ -280,5 +287,30 @@ describe("ReviewChangeSet", () => {
       }),
     ]);
     expect(changeSet.unchangedAfterBlockIds).toEqual(["b0"]);
+  });
+
+  test("similar text under an unrelated replacement heading keeps prior feedback on the removal", () => {
+    const before = [
+      "# Doc",
+      "",
+      "## Threshold policy",
+      "",
+      "The evaluator {==checks the declared threshold==}{>>Keep this feedback here.<<}{#c1}.",
+      "",
+      "## Stable section",
+      "",
+      "Stable text.",
+      "",
+      "---",
+      "comments:",
+      "  c1: {by: user, at: 2026-09-23T18:00:00Z, status: open}",
+      "",
+    ].join("\n");
+    const after = "# Doc\n\n## Stable section\n\nStable text.\n\n## Deployment archive\n\nThe evaluator checks the declared threshold and records it remotely.\n";
+
+    const changes = buildReviewChangeSet({ beforeSource: before, afterSource: after }).changes;
+    expect(changes.filter((change) => change.kind === "modified")).toHaveLength(0);
+    expect(changes.find((change) => change.kind === "removed" && change.summary.includes("evaluator"))?.priorItemIds).toEqual(["c1"]);
+    expect(changes.find((change) => change.kind === "added" && change.summary.includes("evaluator"))?.priorItemIds).toEqual([]);
   });
 });

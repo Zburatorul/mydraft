@@ -67,4 +67,29 @@ describe("ReviewHistory", () => {
     expect(() => history.complete({ ...archive, source: "# Replaced\n" })).toThrow("already frozen");
     expect(history.archive("review-old")?.source).toBe("# Frozen\n");
   });
+
+  test("a failed persistence attempt leaves an exact retry able to persist", () => {
+    let attempts = 0;
+    const saved: ReviewHistorySnapshot[] = [];
+    const history = new ReviewHistory({ persist: (snapshot) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("disk unavailable");
+      saved.push(snapshot);
+    } });
+    const archive = {
+      reviewId: "review-old",
+      path: "/docs/plan.md",
+      title: "plan.md",
+      version: "version-old",
+      source: "# Frozen\n",
+      completedAt: "2026-09-23T18:00:00.000Z",
+      revision: null,
+    };
+
+    expect(() => history.complete(archive)).toThrow("disk unavailable");
+    history.complete({ ...archive, completedAt: "2026-09-23T18:00:01.000Z" });
+
+    expect(attempts).toBe(2);
+    expect(saved[0]?.archives[archive.reviewId]?.source).toBe("# Frozen\n");
+  });
 });
