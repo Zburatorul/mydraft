@@ -82,10 +82,15 @@ function reviewSession(): string | undefined {
 }
 async function trackReview(port: number, file: string): Promise<{ reviewId: string }> {
   const session = reviewSession();
+  const predecessorReviewId = typeof flags["from-review"] === "string" ? String(flags["from-review"]).trim() : "";
   const r = await fetch(`http://localhost:${port}/api/reviews`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ path: file, ...(session ? { context: { session } } : {}) }),
+    body: JSON.stringify({
+      path: file,
+      ...(session ? { context: { session } } : {}),
+      ...(predecessorReviewId ? { predecessorReviewId } : {}),
+    }),
   });
   if (!r.ok) die(`could not start review: ${(await r.json().catch(() => ({})))?.error ?? r.statusText}`);
   return r.json() as Promise<{ reviewId: string }>;

@@ -646,4 +646,121 @@ describe("cross-element annotation in a real browser", () => {
     expect(await page.locator("#changesDlg ins").allTextContents()).toContain("Add adversarial trials.");
     await page.close();
   }, E2E_TIMEOUT_MS);
+
+  test("a linked review opens on rendered changes with prior feedback one action away", async () => {
+    const fixture = path.join(tempDir, "linked-change-review.md");
+    fs.writeFileSync(fixture, [
+      "# Evaluation plan {#plan}",
+      "",
+      "Context stays the same.",
+      "",
+      "## Decision rule {#decision-rule}",
+      "",
+      "The evaluator {==passes ambiguous traces==}{>>Explain how ambiguity is classified.<<}{#c1}.",
+      "",
+      "---",
+      "comments:",
+      "  c1: {by: user, at: 2026-09-23T18:00:00Z, status: open}",
+      "",
+    ].join("\n"));
+    const firstResponse = await fetch(`${baseUrl}/api/reviews`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: fixture }),
+    });
+    const first = await firstResponse.json() as { reviewId: string; currentVersion: string };
+    const completed = await fetch(`${baseUrl}/api/done`, {
+      method: "POST",
+      body: JSON.stringify({ reviewId: first.reviewId, version: first.currentVersion }),
+    });
+    expect(completed.status).toBe(200);
+
+    fs.writeFileSync(fixture, [
+      "# Evaluation plan {#plan}",
+      "",
+      "Context stays the same.",
+      "",
+      "## Decision rule {#decision-rule}",
+      "",
+      "The evaluator reports uncertainty separately from failure.",
+      "",
+      "Add one adversarial trial with the expected signal absent.",
+      "",
+    ].join("\n"));
+    const successorResponse = await fetch(`${baseUrl}/api/reviews`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: fixture, predecessorReviewId: first.reviewId }),
+    });
+    const successor = await successorResponse.json() as { reviewId: string };
+    const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+    await page.goto(`${baseUrl}/review/${encodeURIComponent(successor.reviewId)}`);
+    await page.locator("#changeNavigator").waitFor({ state: "visible" });
+
+    expect(await page.locator("#changeSummary").textContent()).toContain("2 changes");
+    expect(await page.locator("html").getAttribute("data-review-mode")).toBe("changes");
+    expect(await page.locator("#changeCards .change-card").count()).toBe(2);
+    expect(await page.locator("#changeCards").textContent()).toContain("Explain how ambiguity is classified.");
+    expect(await page.locator(".prior-thread .body").isHidden()).toBeTrue();
+    await page.locator(".prior-thread summary").click();
+    expect(await page.locator(".prior-thread .body").isVisible()).toBeTrue();
+    expect(await page.locator("#changeCards .change-jump").first().getAttribute("type")).toBe("button");
+    expect(await page.locator('#doc > [data-bid="b3"]').getAttribute("data-change-kind")).toBe("modified");
+    expect(await page.locator('#doc > [data-bid="b1"]').getAttribute("data-change-stable")).toBe("true");
+
+    await page.locator("#changeNext").click();
+    expect(await page.locator("#changePosition").textContent()).toBe("2 of 2");
+    expect(await page.locator('#doc [data-change-active="true"]').textContent()).toContain("adversarial trial");
+
+    await page.locator("#changeModeToggle").click();
+    expect(await page.locator("html").getAttribute("data-review-mode")).toBe("document");
+    expect(await page.locator("#changeModeToggle").textContent()).toBe("Show changes");
+    await page.locator("#changeModeToggle").click();
+    expect(await page.locator("html").getAttribute("data-review-mode")).toBe("changes");
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
+  test("a linked review emphasizes the exact changed semantic object", async () => {
+    const fixture = path.join(tempDir, "linked-semantic-review.md");
+    const source = (value: string) => [
+      "# Trial result",
+      "",
+      "```explainer {#result}",
+      "title: Trial",
+      "sections:",
+      "  - type: result",
+      "    id: verdict",
+      "    label: Score",
+      `    value: ${value}`,
+      "    status: measured",
+      "```",
+      "",
+    ].join("\n");
+    fs.writeFileSync(fixture, source("0.68"));
+    const first = await (await fetch(`${baseUrl}/api/reviews`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: fixture }),
+    })).json() as { reviewId: string; currentVersion: string };
+    expect((await fetch(`${baseUrl}/api/done`, {
+      method: "POST",
+      body: JSON.stringify({ reviewId: first.reviewId, version: first.currentVersion }),
+    })).status).toBe(200);
+    fs.writeFileSync(fixture, source("0.73"));
+    const successor = await (await fetch(`${baseUrl}/api/reviews`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: fixture, predecessorReviewId: first.reviewId }),
+    })).json() as { reviewId: string };
+
+    const page = await browser.newPage({ viewport: { width: 900, height: 800 } });
+    await page.goto(`${baseUrl}/review/${encodeURIComponent(successor.reviewId)}`);
+    await page.locator("#changeNavigator").waitFor({ state: "visible" });
+
+    expect(await page.locator('[data-bid="result"]').getAttribute("data-change-kind")).toBe("modified");
+    expect(await page.locator('[data-myd-target="verdict"]').getAttribute("data-semantic-change")).toBe("true");
+    expect(await page.locator("#changeCards").textContent()).toContain("verdict.value");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(900);
+    await page.close();
+  }, E2E_TIMEOUT_MS);
 });

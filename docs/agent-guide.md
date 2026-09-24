@@ -17,12 +17,13 @@ Topics: `workflow` · `blocks` · `objects` · `explainers` · `rich` · `critic
 myd view /abs/doc.md                 # open viewer and return; end the agent turn
 myd comments /abs/doc.md             # next turn: pending items in document order (--json; --all includes resolved)
 myd reply /abs/doc.md c3 "…"         # thread reply (author AI); myd resolve /abs/doc.md c3 [--summary "…"]
-myd view /abs/doc.md                 # hand revisions back, nonblocking
+myd view /abs/doc.md --from-review ID # hand a clean revision back with review-relative changes
 ```
 
 - Default to asynchronous handoff: open the review, tell the user to return in chat when finished, and end the turn. Do not poll or narrate idle status. On the next user turn, run `myd comments` first.
 - Use `--wait --timeout N` only when the user explicitly requests synchronous waiting and the runtime can block without polling (maximum 1800 seconds). If the wait yields and would require polling, terminate only the waiter; the detached server and tab remain usable.
 - Edits you make while the viewer is open show up live (file watcher). Prefer block ops (below) to whole-file rewrites: they keep the user's annotations and diff cleanly.
+- After the reviewer completes a review and you produce a clean revision, pass the completed `reviewId` back with `myd view FILE --from-review ID`. The linked review opens in Changes mode: changed rendered regions are emphasized, stable material recedes, prior feedback is available from the change card, and the source diff remains an audit fallback. Omit the flag for an unrelated review.
 - After a substantial rewrite of a doc the user already reviewed: `myd diff OLD.md NEW.md` → CriticMarkup diff file they can open with `myd view`.
 - Verify what you rendered: `myd shot /abs/doc.md out.png` (headless Chrome), then look at the PNG.
 

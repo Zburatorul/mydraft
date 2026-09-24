@@ -20,6 +20,10 @@ let state = { version: null, items: [], html: "" };
 let reviewStatus = null;
 let ws;
 let composerFocusAfterReload = null;
+let reviewChanges = null;
+let selectedChangeIndex = 0;
+let changeModePreference = null;
+let railView = "comments";
 
 if (!docPath && !reviewId && !docHandle) { docEl.innerHTML = "<p>Open with <code>myd view /abs/file.md</code></p>"; throw new Error("no review, handle or path"); }
 let fileName = docPath?.split("/").pop() ?? "review";
@@ -61,18 +65,21 @@ let railAutoOpen = false;
 function setRailOpen(open) {
   railPanel.hidden = !open;
   mainEl.classList.toggle("rail-closed", !open);
+  const noun = reviewChanges ? "review panel" : "comments";
   railToggle.setAttribute("aria-expanded", String(open));
-  railToggle.setAttribute("aria-label", open ? "Hide comments" : "Show comments");
-  railToggle.querySelector("[data-rail-label]").textContent = open ? "Hide comments" : "Show comments";
+  railToggle.setAttribute("aria-label", open ? `Hide ${noun}` : `Show ${noun}`);
+  railToggle.querySelector("[data-rail-label]").textContent = open ? `Hide ${noun}` : `Show ${noun}`;
 }
 function syncRailDefault() {
   const hasThreads = state.items.some((item) => item.kind !== "reply");
+  const hasChanges = Boolean(reviewChanges?.changeSet.changes.length);
+  const hasRailContent = hasThreads || hasChanges;
   if (railPreference !== null) { railHadThreads = hasThreads; return; }
   // Keep an initially empty/narrow review spacious, but reveal the thread a reviewer
   // just created. Once revealed, live reloads must not hide the reply controls again.
   if (railHadThreads === false && hasThreads) railAutoOpen = true;
-  if (!hasThreads) railAutoOpen = false;
-  setRailOpen(hasThreads && (railAutoOpen || !railMediaQuery.matches));
+  if (!hasRailContent) railAutoOpen = false;
+  setRailOpen(hasRailContent && (hasChanges || railAutoOpen || !railMediaQuery.matches));
   railHadThreads = hasThreads;
 }
 setRailOpen(false);
@@ -128,12 +135,15 @@ async function load() {
   if (seq !== loadSeq) return true;
   restoreComposerFocusAfterReload();
   paintHighlights();
+  await loadReviewChanges(data, seq);
+  if (seq !== loadSeq) return true;
   renderRail();
   syncRailDefault();
   window.scrollTo(0, y);
   statusEl.textContent = revisionLabel(data.revision, data.version);
   statusEl.title = revisionTitle(data.revision, data.version);
   $("#changesBtn").hidden = !data.changesAvailable;
+  $("#changesBtn").textContent = data.comparison ? "± Source diff" : "± Changes";
   await checkTracking();
   return true;
 }
@@ -553,6 +563,163 @@ function objectComment(blockEl, target, evt, quote = null) {
   reviewComposer.open({ kind: "comment", ...captured });
 }
 
+// ---------- change-focused review ----------
+function changeRegion(change) {
+  return docEl.querySelector(`[data-change-id="${CSS.escape(change.id)}"]`);
+}
+
+function setRailView(view) {
+  railView = view;
+  $("#changeCards").hidden = view !== "changes";
+  railEl.hidden = view !== "comments";
+  $("#changeTab").classList.toggle("active", view === "changes");
+  $("#commentTab").classList.toggle("active", view === "comments");
+  $("#changeTab").setAttribute("aria-selected", String(view === "changes"));
+  $("#commentTab").setAttribute("aria-selected", String(view === "comments"));
+}
+
+function setChangeMode(enabled) {
+  changeModePreference = enabled;
+  document.documentElement.dataset.reviewMode = enabled ? "changes" : "document";
+  $("#changeModeToggle").textContent = enabled ? "Full document" : "Show changes";
+}
+
+function selectChange(index, { scroll = true } = {}) {
+  const changes = reviewChanges?.changeSet.changes ?? [];
+  if (!changes.length) {
+    $("#changePosition").textContent = "No source changes";
+    $("#changePrevious").disabled = true;
+    $("#changeNext").disabled = true;
+    return;
+  }
+  selectedChangeIndex = Math.max(0, Math.min(index, changes.length - 1));
+  const selected = changes[selectedChangeIndex];
+  docEl.querySelectorAll("[data-change-active]").forEach((element) => element.removeAttribute("data-change-active"));
+  $("#changeCards").querySelectorAll(".change-card").forEach((card) => card.classList.toggle("active", card.dataset.changeId === selected.id));
+  const region = changeRegion(selected);
+  if (region) {
+    region.dataset.changeActive = "true";
+    if (scroll) {
+      setChangeMode(true);
+      region.scrollIntoView({ block: "center", behavior: "smooth" });
+      region.focus({ preventScroll: true });
+    }
+  }
+  $("#changePosition").textContent = `${selectedChangeIndex + 1} of ${changes.length}`;
+  $("#changePrevious").disabled = selectedChangeIndex === 0;
+  $("#changeNext").disabled = selectedChangeIndex === changes.length - 1;
+}
+
+function priorThreadHtml(ids, items) {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  return ids.map((id) => {
+    const root = byId.get(id);
+    if (!root) return "";
+    const replies = items.filter((item) => item.parentId === id);
+    return `<details class="prior-thread"><summary>Prior feedback <span class="id">${escape(id)}</span></summary>
+      <div class="body">${escape(root.text)}</div>
+      ${replies.map((reply) => `<div class="reply"><b>${escape(reply.author ?? "?")}</b> ${escape(reply.text)}</div>`).join("")}
+    </details>`;
+  }).join("");
+}
+
+function applyRenderedChanges(changeSet) {
+  docEl.querySelectorAll("[data-change-id], [data-change-stable], [data-semantic-change]").forEach((element) => {
+    element.removeAttribute("data-change-id");
+    element.removeAttribute("data-change-kind");
+    element.removeAttribute("data-change-label");
+    element.removeAttribute("data-change-stable");
+    element.removeAttribute("data-semantic-change");
+    element.removeAttribute("data-change-active");
+  });
+  docEl.querySelectorAll(".change-tombstone").forEach((element) => element.remove());
+
+  const stable = new Set(changeSet.unchangedAfterBlockIds);
+  for (const element of docEl.querySelectorAll(":scope > [data-bid]")) {
+    if (stable.has(element.dataset.bid)) element.dataset.changeStable = "true";
+  }
+  for (const change of changeSet.changes) {
+    if (change.after) {
+      const element = docEl.querySelector(`:scope > [data-bid="${CSS.escape(change.after.blockId)}"]`);
+      if (!element) continue;
+      element.dataset.changeId = change.id;
+      element.dataset.changeKind = change.kind;
+      element.dataset.changeLabel = change.kind === "modified" ? "Modified" : "Added";
+      element.setAttribute("tabindex", "-1");
+      for (const semantic of change.semanticChanges) {
+        const object = element.querySelector(`[data-myd-target="${CSS.escape(semantic.id)}"]`);
+        if (object) object.dataset.semanticChange = "true";
+      }
+      continue;
+    }
+    const tombstone = document.createElement("button");
+    tombstone.type = "button";
+    tombstone.className = "change-tombstone";
+    tombstone.dataset.changeId = change.id;
+    tombstone.dataset.changeKind = "removed";
+    tombstone.textContent = `Removed · ${change.summary}`;
+    const blocks = [...docEl.querySelectorAll(":scope > [data-bid]")];
+    docEl.insertBefore(tombstone, blocks[Math.min(change.before?.index ?? blocks.length, blocks.length)] ?? null);
+    tombstone.onclick = () => selectChange(changeSet.changes.indexOf(change));
+  }
+}
+
+function renderChangeCards(data) {
+  const changes = data.changeSet.changes;
+  $("#changeCards").innerHTML = changes.map((change) => {
+    const semantic = change.semanticChanges.map((field) => `${field.id}.${field.field}`).join(", ");
+    return `<article class="change-card" data-change-id="${escape(change.id)}">
+      <div class="meta"><span class="change-kind ${change.kind}">${escape(change.kind)}</span>${change.priorItemIds.length ? ` · ${change.priorItemIds.map(escape).join(", ")}` : " · Other change"}</div>
+      <strong>${escape(change.summary)}</strong>
+      ${semantic ? `<div class="semantic-summary">Changed object fields: ${escape(semantic)}</div>` : ""}
+      <button class="link change-jump" type="button">Jump to this change</button>
+      ${priorThreadHtml(change.priorItemIds, data.priorItems ?? [])}
+    </article>`;
+  }).join("") || "<p class='muted'>No source changes in this revision.</p>";
+  $("#changeCards").querySelectorAll(".change-card").forEach((card, index) => {
+    card.querySelector(".change-jump").addEventListener("click", () => selectChange(index));
+  });
+}
+
+async function loadReviewChanges(documentData, seq) {
+  if (!documentData.comparison) {
+    reviewChanges = null;
+    $("#changeNavigator").hidden = true;
+    $("#railTabs").hidden = true;
+    $("#commentsHeading").hidden = false;
+    $("#changeCards").hidden = true;
+    railEl.hidden = false;
+    document.documentElement.dataset.reviewMode = "document";
+    return;
+  }
+  const response = await fetch(`/api/changes?${documentQuery()}`);
+  if (!response.ok || seq !== loadSeq) return;
+  const data = await response.json();
+  if (!data.available || data.mode !== "review") return;
+  reviewChanges = data;
+  if (changeModePreference === null) {
+    changeModePreference = true;
+    railView = "changes";
+  }
+  $("#changeNavigator").hidden = false;
+  $("#railTabs").hidden = false;
+  $("#commentsHeading").hidden = true;
+  $("#changeSummary").textContent = `${data.changeSet.changes.length} change${data.changeSet.changes.length === 1 ? "" : "s"} since review ${data.predecessorReviewId}`;
+  $("#changeCount").textContent = `(${data.changeSet.changes.length})`;
+  applyRenderedChanges(data.changeSet);
+  renderChangeCards(data);
+  setRailView(railView);
+  setChangeMode(changeModePreference);
+  selectChange(Math.min(selectedChangeIndex, Math.max(0, data.changeSet.changes.length - 1)), { scroll: false });
+}
+
+$("#changePrevious").onclick = () => selectChange(selectedChangeIndex - 1);
+$("#changeNext").onclick = () => selectChange(selectedChangeIndex + 1);
+$("#changeModeToggle").onclick = () => setChangeMode(!changeModePreference);
+$("#changeSourceDiff").onclick = () => $("#changesBtn").click();
+$("#changeTab").onclick = () => setRailView("changes");
+$("#commentTab").onclick = () => setRailView("comments");
+
 // ---------- rail ----------
 function renderRail() {
   const replyState = new Map([...railEl.querySelectorAll(".replyForm")].map((form) => {
@@ -568,6 +735,7 @@ function renderRail() {
   const roots = state.items.filter((i) => i.kind !== "reply" && (showResolved || i.status !== "resolved"));
   const replies = (id) => state.items.filter((i) => i.kind === "reply" && i.parentId === id);
   $("#count").textContent = roots.length ? `(${roots.length})` : "";
+  $("#countFallback").textContent = roots.length ? `(${roots.length})` : "";
   railEl.innerHTML = roots.map((it) => {
     const anchor = it.anchorText ?? it.originalText ?? "";
     const objAnchor = it.anchor ? `<span class="obj-tag">${escape(it.anchor.target ? `${it.anchor.block} › ${it.anchor.target}` : it.anchor.block)}</span>` : "";

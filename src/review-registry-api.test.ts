@@ -58,11 +58,20 @@ async function openReviewSocket(reviewId: string) {
 }
 
 // Runs the real CLI so the session it sends is covered, not just the tracker that consumes it.
-async function runView(doc: string, session: string) {
+async function runView(doc: string, session: string, fromReview?: string) {
   const env: Record<string, string> = { ...process.env as Record<string, string>, MYD_HOME: path.join(tempDir, "state"), MYD_NO_OPEN: "1", MYD_SESSION: session };
   delete env.CLAUDE_CODE_SESSION_ID;
   // These tests exercise registry lifecycle, not the structural gate (covered in check.test.ts).
-  const cli = Bun.spawn([process.execPath, path.join(ROOT, "src/cli.ts"), "view", doc, "--json", "--no-open", "--skip-check"], { cwd: ROOT, env, stdout: "pipe", stderr: "pipe" });
+  const cli = Bun.spawn([
+    process.execPath,
+    path.join(ROOT, "src/cli.ts"),
+    "view",
+    doc,
+    "--json",
+    "--no-open",
+    "--skip-check",
+    ...(fromReview ? ["--from-review", fromReview] : []),
+  ], { cwd: ROOT, env, stdout: "pipe", stderr: "pipe" });
   const output = await new Response(cli.stdout).text();
   expect(await cli.exited).toBe(0);
   return JSON.parse(output) as { url: string; reviewId: string };
@@ -198,6 +207,59 @@ describe("durable review registry API", () => {
 
     expect(await trackedState(b.reviewId)).toBe("active");
     expect(await trackedState(c.reviewId)).toBe("active");
+  }, TEST_TIMEOUT_MS);
+
+  test("a linked successor compares against and can reopen its completed review snapshot", async () => {
+    if (!server) await startServer();
+    const doc = path.join(tempDir, "linked-revision.md");
+    fs.writeFileSync(doc, "# Evaluation plan {#plan}\n\nUse the old verifier.\n");
+
+    const firstResponse = await postJson("/api/reviews", { path: doc, context: { session: "revision-agent" } });
+    expect(firstResponse.status).toBe(201);
+    const first = await firstResponse.json() as { reviewId: string; currentVersion: string };
+    expect((await postJson("/api/done", { reviewId: first.reviewId, version: first.currentVersion })).status).toBe(200);
+
+    fs.writeFileSync(doc, "# Evaluation plan {#plan}\n\nUse the improved verifier.\n\nAdd adversarial trials.\n");
+    const successor = await runView(doc, "revision-agent", first.reviewId);
+    const successorRecord = await (await fetch(`${baseUrl}/api/reviews/${encodeURIComponent(successor.reviewId)}`)).json() as {
+      review: { predecessorReviewId: string | null };
+    };
+    expect(successorRecord.review.predecessorReviewId).toBe(first.reviewId);
+
+    const archivedDocument = await (await fetch(`${baseUrl}/api/doc?review=${encodeURIComponent(first.reviewId)}`)).json() as { html: string };
+    expect(archivedDocument.html).toContain("Use the old verifier.");
+    expect(archivedDocument.html).not.toContain("Use the improved verifier.");
+
+    const successorDocument = await (await fetch(`${baseUrl}/api/doc?review=${encodeURIComponent(successor.reviewId)}`)).json() as {
+      comparison: { predecessorReviewId: string; changeCount: number } | null;
+      changesAvailable: boolean;
+    };
+    expect(successorDocument).toMatchObject({
+      changesAvailable: true,
+      comparison: { predecessorReviewId: first.reviewId, changeCount: 2 },
+    });
+
+    const changes = await (await fetch(`${baseUrl}/api/changes?review=${encodeURIComponent(successor.reviewId)}`)).json() as {
+      mode: string;
+      predecessorReviewId: string;
+      changeSet: { changes: Array<{ kind: string; summary: string }> };
+    };
+    expect(changes).toMatchObject({
+      available: true,
+      mode: "review",
+      predecessorReviewId: first.reviewId,
+      changeSet: {
+        changes: [
+          expect.objectContaining({ kind: "modified", summary: "Use the improved verifier." }),
+          expect.objectContaining({ kind: "added", summary: "Add adversarial trials." }),
+        ],
+      },
+    });
+
+    await stopServer();
+    await startServer();
+    const restored = await (await fetch(`${baseUrl}/api/changes?review=${encodeURIComponent(successor.reviewId)}`)).json() as { mode: string; predecessorReviewId: string };
+    expect(restored).toMatchObject({ mode: "review", predecessorReviewId: first.reviewId });
   }, TEST_TIMEOUT_MS);
 
   test("done events can be filtered to a single review of a shared document", async () => {

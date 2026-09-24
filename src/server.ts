@@ -12,6 +12,7 @@ import { mutateDocument } from "./document-mutation.ts";
 import { normalizePublicOrigin } from "./public-url.ts";
 import { DocumentHandles } from "./document-handles.ts";
 import { revisionDiff } from "./revision-diff.ts";
+import { ReviewHistory, type ReviewHistorySnapshot } from "./review-history.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const WEB = path.join(ROOT, "web");
@@ -20,6 +21,7 @@ export const STATE_DIR = process.env.MYD_HOME ?? path.join(os.homedir(), ".mydra
 export const STATE_FILE = path.join(STATE_DIR, "server.json");
 export const REVISION_FILE = path.join(STATE_DIR, "revisions.json");
 export const REVIEW_FILE = path.join(STATE_DIR, "reviews.json");
+export const REVIEW_HISTORY_FILE = path.join(STATE_DIR, "review-history.json");
 
 type Client = { path: string; reviewId: string | null; inbox?: boolean };
 const topics = new Map<string, Set<any>>(); // abs path → sockets
@@ -29,6 +31,7 @@ const doneLog: Array<{ path: string; at: string; note?: string }> = [];
 const documentHandles = new DocumentHandles();
 const reviewTracker = new ReviewTracker({ initial: loadSnapshot<ReviewSnapshot>(REVIEW_FILE), persist: (snapshot) => saveSnapshot(REVIEW_FILE, snapshot) });
 const revisionTracker = new RevisionTracker(loadSnapshot<RevisionSnapshot>(REVISION_FILE), (snapshot) => saveSnapshot(REVISION_FILE, snapshot));
+const reviewHistory = new ReviewHistory({ initial: loadSnapshot<ReviewHistorySnapshot>(REVIEW_HISTORY_FILE), persist: (snapshot) => saveSnapshot(REVIEW_HISTORY_FILE, snapshot) });
 
 function loadSnapshot<T extends object>(file: string): T {
   try { return JSON.parse(fs.readFileSync(file, "utf8")); } catch { return {} as T; }
@@ -120,7 +123,8 @@ function buildInbox(statuses: string[] | null): InboxRow[] {
     .filter((record) => statuses ? statuses.includes(record.status) : isDefaultVisible(record.status))
     .map((record) => {
       try {
-        const doc = loadDoc(record.path, fs.readFileSync(record.path, "utf8"));
+        const archived = reviewHistory.archive(record.id);
+        const doc = loadDoc(record.path, archived?.source ?? fs.readFileSync(record.path, "utf8"));
         return inboxRow(record, { revision: revisionTracker.current(record.path)?.number ?? null, items: doc.items });
       } catch { return inboxRow(record, null); }
     });
@@ -130,7 +134,7 @@ function buildInbox(statuses: string[] | null): InboxRow[] {
  *  the API hands back identifies its document by `title` — never by server-side path. */
 function publicReview(record: ReviewRecord) {
   const { path: _serverPath, ...shareable } = record;
-  return shareable;
+  return { ...shareable, predecessorReviewId: reviewHistory.predecessor(record.id) };
 }
 /** Reading for a caller who supplied only a review id: filesystem errors quote the absolute
  *  path, so they are replaced rather than forwarded. A caller who passed a path keeps the
@@ -138,7 +142,10 @@ function publicReview(record: ReviewRecord) {
 function readDocFor(pathParam: unknown, reviewId: unknown): Doc {
   const resolved = requestedDocumentPath(pathParam, reviewId);
   if (!(typeof reviewId === "string" && reviewId)) return readDoc(resolved);
-  try { return readDoc(resolved); }
+  try {
+    const archived = reviewHistory.archive(reviewId);
+    return archived ? loadDoc(resolved, archived.source) : readDoc(resolved);
+  }
   catch { throw Object.assign(new Error("This review's document is no longer readable."), { status: 410 }); }
 }
 
@@ -202,11 +209,18 @@ export function startServer(port = 7474, options: { publicUrl?: string | null } 
         if (req.method === "POST" && (p === "/api/reviews" || p === "/api/track")) {
           const b = await req.json();
           const doc = readDocFor(b.path, b.reviewId);
+          const predecessorReviewId = typeof b.predecessorReviewId === "string" && b.predecessorReviewId ? b.predecessorReviewId : null;
+          if (predecessorReviewId) {
+            const predecessor = reviewHistory.archive(predecessorReviewId);
+            if (!predecessor) throw Object.assign(new Error("Predecessor review has no completed snapshot."), { status: 409 });
+            if (predecessor.path !== doc.path) throw Object.assign(new Error("Predecessor review belongs to a different document."), { status: 409 });
+          }
           ensureWatch(doc.path);
           const status = reviewTracker.track(doc.path, doc.version, {
             title: typeof b.title === "string" ? b.title : undefined,
             context: b.context && typeof b.context === "object" ? b.context : undefined,
           });
+          if (predecessorReviewId) reviewHistory.link({ reviewId: status.reviewId, predecessorReviewId, path: doc.path });
           broadcast(doc.path, { type: "tracking-changed" });
           notifyInbox();
           return json({ ...status, review: publicReview(reviewTracker.get(status.reviewId)!), revision: revisionTracker.current(doc.path) }, p === "/api/reviews" ? 201 : 200);
@@ -250,13 +264,21 @@ export function startServer(port = 7474, options: { publicUrl?: string | null } 
           if (req.headers.get("accept")?.includes("text/markdown")) return new Response(doc.source, { headers: { "content-type": "text/markdown" } });
           const html = await renderDoc(doc);
           const byPath = !url.searchParams.get("review") && !!url.searchParams.get("path");
+          const reviewId = url.searchParams.get("review");
+          const archived = reviewId ? reviewHistory.archive(reviewId) : null;
+          const reviewComparison = reviewId && !archived ? reviewHistory.comparison(reviewId, doc.source) : null;
+          const latestComparison = revisionTracker.comparison(doc.path);
           return json({
             ...(byPath ? { path: doc.path } : {}),
             name: path.basename(doc.path),
             version: doc.version,
-            revision: revisionTracker.current(doc.path),
-            previousRevision: revisionTracker.previous(doc.path),
-            changesAvailable: revisionTracker.comparison(doc.path) !== null,
+            revision: archived?.revision ?? revisionTracker.current(doc.path),
+            previousRevision: archived ? null : revisionTracker.previous(doc.path),
+            comparison: reviewComparison ? {
+              predecessorReviewId: reviewComparison.predecessorReviewId,
+              changeCount: reviewComparison.changeSet.changes.length,
+            } : null,
+            changesAvailable: reviewComparison !== null || (!archived && latestComparison !== null),
             html,
             items: doc.items,
             cleanLength: doc.clean.length,
@@ -264,10 +286,38 @@ export function startServer(port = 7474, options: { publicUrl?: string | null } 
         }
         if (p === "/api/changes") {
           const doc = readDocFor(url.searchParams.get("path"), url.searchParams.get("review"));
+          const reviewId = url.searchParams.get("review");
+          const reviewComparison = reviewId ? reviewHistory.comparison(reviewId, doc.source) : null;
+          if (reviewComparison) {
+            const predecessor = reviewHistory.archive(reviewComparison.predecessorReviewId)!;
+            const predecessorDocument = loadDoc(doc.path, predecessor.source);
+            return json({
+              available: true,
+              mode: "review",
+              predecessorReviewId: reviewComparison.predecessorReviewId,
+              before: reviewComparison.before.revision ?? { version: reviewComparison.before.version },
+              after: revisionTracker.current(doc.path),
+              changeSet: reviewComparison.changeSet,
+              priorItems: predecessorDocument.items.map((item) => ({
+                id: item.id,
+                kind: item.kind,
+                parentId: item.parentId,
+                author: item.author,
+                text: item.text,
+                status: item.status,
+                anchorText: item.anchorText,
+                originalText: item.originalText,
+                replacementText: item.replacementText,
+                anchor: item.anchor,
+              })),
+              hunks: revisionDiff(predecessorDocument.clean, doc.clean),
+            }, 200);
+          }
           const comparison = revisionTracker.comparison(doc.path);
           if (!comparison) return json({ available: false }, 200);
           return json({
             available: true,
+            mode: "revision",
             before: { number: comparison.before.number, version: comparison.before.version, createdAt: comparison.before.createdAt },
             after: { number: comparison.after.number, version: comparison.after.version, createdAt: comparison.after.createdAt },
             hunks: revisionDiff(comparison.before.source, comparison.after.source),
@@ -331,6 +381,17 @@ export function startServer(port = 7474, options: { publicUrl?: string | null } 
             const { appendRoughdraftDocumentComment } = await import("../vendor/rfm/index.js") as any;
             doc = writeDoc(doc, (current) => appendRoughdraftDocumentComment(current.source, { message: String(b.note).trim(), author: b.by ?? "user" }));
           }
+          const completedAt = new Date().toISOString();
+          const review = requireReview(b.reviewId);
+          reviewHistory.complete({
+            reviewId: review.id,
+            path: doc.path,
+            title: review.title,
+            version: doc.version,
+            source: doc.source,
+            completedAt,
+            revision: revisionTracker.current(doc.path),
+          });
           const tracking = reviewTracker.complete(doc.path, b.reviewId, doc.version);
           const ev = { path: doc.path, reviewId: String(b.reviewId), at: new Date().toISOString(), note: b.note };
           doneLog.push(ev);
