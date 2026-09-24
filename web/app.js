@@ -580,9 +580,17 @@ function setRailView(view) {
 }
 
 function setChangeMode(enabled) {
+  window.scrollTo({ top: window.scrollY, behavior: "instant" });
+  const selected = reviewChanges?.changeSet.changes[selectedChangeIndex];
+  const anchor = selected ? changeRegion(selected) : null;
+  const anchorTop = anchor?.getBoundingClientRect().top;
   changeModePreference = enabled;
   document.documentElement.dataset.reviewMode = enabled ? "changes" : "document";
   $("#changeModeToggle").textContent = enabled ? "Full document" : "Show changes";
+  if (anchor && Number.isFinite(anchorTop)) {
+    const shift = anchor.getBoundingClientRect().top - anchorTop;
+    if (shift) window.scrollTo({ top: window.scrollY + shift, behavior: "instant" });
+  }
 }
 
 function selectChange(index, { scroll = true } = {}) {

@@ -1,4 +1,4 @@
-import { loadDoc, type Doc, type ReviewItem } from "./doc.ts";
+import { hashVersion, loadDoc, type Doc, type ReviewItem } from "./doc.ts";
 import { diffExplainers, type ExplainerChange } from "./explainer-diff.ts";
 import { topBlocks, topCodeFences, type Block } from "./render.ts";
 
@@ -127,7 +127,7 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
       score: wordSimilarity(before[beforeIndex]!.source, after[afterIndex]!.source),
     }))).sort((left, right) => right.score - left.score);
     for (const candidate of candidates) {
-      if (candidate.score < .1 || beforeMatch.has(candidate.beforeIndex) || afterMatch.has(candidate.afterIndex)) continue;
+      if (candidate.score < .3 || beforeMatch.has(candidate.beforeIndex) || afterMatch.has(candidate.afterIndex)) continue;
       const ambiguousBefore = candidates.some((other) => other.beforeIndex === candidate.beforeIndex
         && other.afterIndex !== candidate.afterIndex
         && !afterMatch.has(other.afterIndex)
@@ -159,7 +159,7 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
       continue;
     }
     ordered.push({ change: {
-      id: `change-modified-${after[j]!.block.id}`,
+      id: `change-modified-${before[i]!.block.id}`,
       kind: "modified",
       before: blockView(before[i]!),
       after: blockView(after[j]!),
@@ -190,8 +190,10 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
   }
   for (let j = 0; j < after.length; j++) {
     if (afterMatch.has(j)) continue;
+    const contentKey = hashVersion(after[j]!.source).slice(0, 12);
+    const contentOccurrence = after.slice(0, j).filter((candidate, index) => !afterMatch.has(index) && hashVersion(candidate.source).slice(0, 12) === contentKey).length + 1;
     ordered.push({ change: {
-      id: `change-added-${after[j]!.block.id}`,
+      id: `change-added-${after[j]!.block.name ?? `${contentKey}-${contentOccurrence}`}`,
       kind: "added",
       before: null,
       after: blockView(after[j]!),

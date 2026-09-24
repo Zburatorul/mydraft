@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { hashVersion } from "./doc.ts";
 import { buildReviewChangeSet } from "./review-change-set.ts";
 
 describe("ReviewChangeSet", () => {
@@ -28,7 +29,7 @@ describe("ReviewChangeSet", () => {
       "",
       "## Decision rule {#decision-rule}",
       "",
-      "The evaluator reports uncertainty separately from failure.",
+      "The evaluator passes traces by reporting ambiguity separately from failure.",
       "",
       "## Adversarial check {#adversarial-check}",
       "",
@@ -42,9 +43,9 @@ describe("ReviewChangeSet", () => {
           id: "change-modified-b3",
           kind: "modified",
           before: { blockId: "b3", index: 3, head: "The evaluator passes ambiguous traces.", source: "The evaluator passes ambiguous traces." },
-          after: { blockId: "b3", index: 3, head: "The evaluator reports uncertainty separately from failure.", source: "The evaluator reports uncertainty separately from failure." },
+          after: { blockId: "b3", index: 3, head: "The evaluator passes traces by reporting ambiguity separately from failure.", source: "The evaluator passes traces by reporting ambiguity separately from failure." },
           insertBeforeBlockId: null,
-          summary: "The evaluator reports uncertainty separately from failure.",
+          summary: "The evaluator passes traces by reporting ambiguity separately from failure.",
           priorItemIds: ["c1"],
           semanticChanges: [],
         },
@@ -79,7 +80,7 @@ describe("ReviewChangeSet", () => {
           semanticChanges: [],
         },
         {
-          id: "change-added-b5",
+          id: `change-added-${hashVersion("Run one trial with the expected signal absent.").slice(0, 12)}-1`,
           kind: "added",
           before: null,
           after: { blockId: "b5", index: 5, head: "Run one trial with the expected signal absent.", source: "Run one trial with the expected signal absent." },
@@ -208,5 +209,35 @@ describe("ReviewChangeSet", () => {
     expect(changes.filter((change) => change.kind === "modified")).toHaveLength(0);
     expect(changes.filter((change) => change.kind === "removed").map((change) => change.priorItemIds)).toEqual([["c1"], ["c2"]]);
     expect(changes.filter((change) => change.kind === "added").every((change) => change.priorItemIds.length === 0)).toBeTrue();
+  });
+
+  test("one shared domain word is not enough to claim prior feedback was addressed", () => {
+    const before = [
+      "## Method {#method}",
+      "",
+      "The evaluator {==checks the threshold==}{>>Clarify the rule.<<}{#c1}.",
+      "",
+      "---",
+      "comments:",
+      "  c1: {by: user, at: 2026-09-23T18:00:00Z, status: open}",
+      "",
+    ].join("\n");
+    const after = "## Method {#method}\n\nThe evaluator deploys the archive.\n";
+
+    const changes = buildReviewChangeSet({ beforeSource: before, afterSource: after }).changes;
+    expect(changes.map((change) => change.kind)).toEqual(["removed", "added"]);
+    expect(changes[0]?.priorItemIds).toEqual(["c1"]);
+    expect(changes[1]?.priorItemIds).toEqual([]);
+  });
+
+  test("a matched unnamed change keeps its identity when a neighbor is inserted", () => {
+    const before = "## Method {#method}\n\nThe evaluator checks local evidence.\n";
+    const firstAfter = "## Method {#method}\n\nThe evaluator checks local evidence and reports uncertainty.\n";
+    const secondAfter = "## Method {#method}\n\nA new setup paragraph.\n\nThe evaluator checks local evidence and reports uncertainty.\n";
+
+    const firstId = buildReviewChangeSet({ beforeSource: before, afterSource: firstAfter }).changes.find((change) => change.kind === "modified")?.id;
+    const secondId = buildReviewChangeSet({ beforeSource: before, afterSource: secondAfter }).changes.find((change) => change.kind === "modified")?.id;
+    expect(firstId).toBe("change-modified-b1");
+    expect(secondId).toBe(firstId);
   });
 });

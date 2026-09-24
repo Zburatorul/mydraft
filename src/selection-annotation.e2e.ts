@@ -682,7 +682,7 @@ describe("cross-element annotation in a real browser", () => {
       "",
       "## Decision rule {#decision-rule}",
       "",
-      "The evaluator reports uncertainty separately from failure.",
+      "The evaluator passes traces by reporting ambiguity separately from failure.",
       "",
       "Add one adversarial trial with the expected signal absent.",
       "",
@@ -703,7 +703,7 @@ describe("cross-element annotation in a real browser", () => {
     expect(await page.locator("#changeTab").getAttribute("aria-pressed")).toBe("true");
     expect(await page.locator("#commentTab").getAttribute("aria-pressed")).toBe("false");
     expect(await page.locator("#changeCards .change-card").count()).toBe(2);
-    expect(await page.locator('#doc [data-change-active="true"]').textContent()).toContain("reports uncertainty");
+    expect(await page.locator('#doc [data-change-active="true"]').textContent()).toContain("reporting ambiguity");
     await page.waitForFunction(() => {
       const region = document.querySelector('#doc [data-change-active="true"]');
       if (!region) return false;
@@ -721,16 +721,24 @@ describe("cross-element annotation in a real browser", () => {
     expect(await page.locator('#doc > [data-bid="b1"]').isHidden()).toBeTrue();
     await page.locator(".unchanged-run-toggle").click();
     expect(await page.locator('#doc > [data-bid="b1"]').isVisible()).toBeTrue();
+    await page.locator(".unchanged-run-toggle").click();
+    expect(await page.locator('#doc > [data-bid="b1"]').isHidden()).toBeTrue();
 
     await page.locator("#changeNext").click();
     expect(await page.locator("#changePosition").textContent()).toBe("2 of 2");
     expect(await page.locator('#doc [data-change-active="true"]').textContent()).toContain("adversarial trial");
 
+    await page.setViewportSize({ width: 1400, height: 400 });
+    await page.locator('#doc [data-change-active="true"]').evaluate((element) => element.scrollIntoView({ block: "center", behavior: "instant" }));
+    const changeTop = await page.locator('#doc [data-change-active="true"]').evaluate((element) => element.getBoundingClientRect().top);
     await page.locator("#changeModeToggle").click();
     expect(await page.locator("html").getAttribute("data-review-mode")).toBe("document");
     expect(await page.locator("#changeModeToggle").textContent()).toBe("Show changes");
+    expect(Math.abs(await page.locator('#doc [data-change-active="true"]').evaluate((element) => element.getBoundingClientRect().top) - changeTop)).toBeLessThanOrEqual(2);
+    expect(await page.locator('#doc > [data-bid="b1"]').isVisible()).toBeTrue();
     await page.locator("#changeModeToggle").click();
     expect(await page.locator("html").getAttribute("data-review-mode")).toBe("changes");
+    expect(await page.locator('#doc > [data-bid="b1"]').isHidden()).toBeTrue();
 
     await page.route("**/api/changes?*", (route) => route.fulfill({ status: 409, body: "version changed" }), { times: 1 });
     const failedComparison = page.waitForResponse((response) => response.url().includes("/api/changes?") && response.status() === 409);
