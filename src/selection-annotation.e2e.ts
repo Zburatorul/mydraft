@@ -174,6 +174,30 @@ describe("cross-element annotation in a real browser", () => {
     await page.close();
   }, E2E_TIMEOUT_MS);
 
+  test("a conflict followed by an HTTP reload failure keeps the target stale", async () => {
+    const { page } = await trackedPage("failed-conflict-reload.md");
+    await page.route("**/api/annotate", (route) => route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "Document changed." }),
+    }));
+    await page.route("**/api/doc?*", (route) => route.fulfill({ status: 500, body: "unavailable" }), { times: 1 });
+    await selectAcrossLink(page);
+    await page.locator('#popover [data-act="comment"]').click();
+    await page.locator("#edBody").fill("Keep this conflicted draft.");
+
+    await page.locator("#edSave").click();
+    await page.locator("#edError").waitFor({ state: "visible" });
+
+    expect(await page.locator("#edBody").inputValue()).toBe("Keep this conflicted draft.");
+    expect(await page.locator("#edError").textContent()).toBe(
+      "Document changed. Could not reload the latest document. Reload the page, then reselect the target.",
+    );
+    expect(await page.locator("#edStale").isVisible()).toBeTrue();
+    expect(await page.locator("#edSave").isDisabled()).toBeTrue();
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
   test("cancel and successful save return focus to the document target", async () => {
     const { page } = await trackedPage("annotation-focus-return.md", SOURCE, { width: 1400, height: 900 });
     await selectAcrossLink(page);

@@ -113,9 +113,9 @@ let loadSeq = 0;
 async function load() {
   const seq = ++loadSeq;
   const r = await fetch(`/api/doc?${documentQuery()}`);
-  if (!r.ok) { statusEl.textContent = "load failed"; return; }
+  if (!r.ok) { statusEl.textContent = "load failed"; return false; }
   const data = await r.json();
-  if (seq !== loadSeq) return; // a newer load superseded this one
+  if (seq !== loadSeq) return true; // a newer load superseded this one
   const y = window.scrollY;
   const previousVersion = state.version;
   state = data;
@@ -125,7 +125,7 @@ async function load() {
   docEl.innerHTML = data.html;
   fixRelativeImages();
   await hydrateRich(seq);
-  if (seq !== loadSeq) return;
+  if (seq !== loadSeq) return true;
   restoreComposerFocusAfterReload();
   paintHighlights();
   renderRail();
@@ -135,6 +135,7 @@ async function load() {
   statusEl.title = revisionTitle(data.revision, data.version);
   $("#changesBtn").hidden = !data.changesAvailable;
   await checkTracking();
+  return true;
 }
 
 function fixRelativeImages() {
@@ -493,7 +494,9 @@ async function submitAnnotation(view, { signal }) {
 }
 const reviewComposer = new ReviewComposer({
   submit: submitAnnotation,
-  reload: load,
+  reload: async () => {
+    if (!await load()) throw new Error("Could not reload document");
+  },
   onChange: renderComposer,
   focusPrimary: (view) => (view.kind === "suggest" ? $("#edRepl") : $("#edBody")).focus({ preventScroll: true }),
   restoreFocus: focusDocumentTarget,
