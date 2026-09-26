@@ -93,3 +93,31 @@ export function revisionDiff(beforeSource: string, afterSource: string, context 
     lines: lines.slice(start, end),
   }));
 }
+
+/** `diff -u` text over the same line diff: `---`/`+++` headers, `@@ -a,b +c,d @@` hunks, 3 lines of
+ *  context by default. Empty when the sources match. Used by `--dry-run` previews (issue #27). */
+export function unifiedDiff(beforeSource: string, afterSource: string, labels: { from: string; to: string }, context = 3): string {
+  const hunks = revisionDiff(beforeSource, afterSource, context);
+  if (!hunks.length) return "";
+  // An empty side names the line *before* the change, as diff(1) does (`-0,0` for a leading insert).
+  const range = (start: number, count: number) => `${count ? start : start - 1},${count}`;
+  const sign = { context: " ", added: "+", removed: "-" } as const;
+  return [`--- ${labels.from}`, `+++ ${labels.to}`, ...hunks.flatMap((hunk) => [
+    `@@ -${range(hunk.beforeStart, hunk.lines.filter((l) => l.kind !== "added").length)} +${range(hunk.afterStart, hunk.lines.filter((l) => l.kind !== "removed").length)} @@`,
+    ...removalsFirst(hunk.lines).map((line) => sign[line.kind] + line.text),
+  ])].join("\n") + "\n";
+}
+
+/** Within each run of changed lines, list removals before additions, the order patch readers expect. */
+function removalsFirst(lines: RevisionDiffLine[]): RevisionDiffLine[] {
+  const ordered: RevisionDiffLine[] = [];
+  for (let i = 0; i < lines.length;) {
+    if (lines[i]!.kind === "context") { ordered.push(lines[i++]!); continue; }
+    let j = i;
+    while (j < lines.length && lines[j]!.kind !== "context") j++;
+    const run = lines.slice(i, j);
+    ordered.push(...run.filter((l) => l.kind === "removed"), ...run.filter((l) => l.kind === "added"));
+    i = j;
+  }
+  return ordered;
+}

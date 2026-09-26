@@ -155,6 +155,69 @@ describe("CLI document mutation seam", () => {
     expect(fs.readFileSync(file, "utf8")).toBe(before);
   });
 
+  describe("--dry-run (issue #27)", () => {
+    const planned = async (file: string) => {
+      fs.writeFileSync(file, "# Title\n\nAlpha.\n\nBeta.\n\nGamma.\n\nDelta.\n");
+      return JSON.parse((await myd(null, "blocks", file, "--json")).stdout);
+    };
+
+    test("previews a diff and the positional shift without touching bytes or version", async () => {
+      const file = fixture();
+      const plan = await planned(file);
+      const before = fs.readFileSync(file, "utf8");
+      const result = await myd("A1.\n\nA2.\n\nA3.", "set-block", file, "b1", "--expect", plan.blocks[1].guard, "--dry-run");
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain(`--- ${file}\n+++ ${file} (dry-run)\n@@ -1,6 +1,10 @@\n # Title\n \n-Alpha.\n+A1.\n+\n+A2.\n`);
+      expect(result.stdout.trimEnd().endsWith("dry-run: no changes written")).toBe(true);
+      expect(result.stderr).toContain("warning: this edit turns 1 block into 3; positional ids b2..b4 shift by +2");
+      expect(fs.readFileSync(file, "utf8")).toBe(before);
+      expect(JSON.parse((await myd(null, "blocks", file, "--json")).stdout).version).toBe(plan.version);
+    });
+
+    test("--json reports the resulting blocks with their guards and the shift", async () => {
+      const file = fixture();
+      const plan = await planned(file);
+      const result = await myd("A1.\n\nA2.\n\nA3.", "set-block", file, "--target-guard", plan.blocks[1].guard, "--dry-run", "--json");
+      expect(result.exitCode).toBe(0);
+      const preview = JSON.parse(result.stdout);
+      expect(preview).toMatchObject({ ok: true, dryRun: true, block: "b1", version: plan.version, before: "Alpha.", after: "A1.\n\nA2.\n\nA3.", shift: { from: "b2", by: 2 } });
+      expect(preview.diff).toContain("+A3.");
+      expect(preview.blocks.map((block: { id: string }) => block.id)).toEqual(["b0", "b1", "b2", "b3", "b4", "b5", "b6"]);
+      // Untouched blocks keep their guards; they just sit two positions later.
+      expect(preview.blocks.slice(4).map((block: { guard: string }) => block.guard)).toEqual(plan.blocks.slice(2).map((block: { guard: string }) => block.guard));
+      // What the preview promised is exactly what the real write produces.
+      expect((await myd("A1.\n\nA2.\n\nA3.", "set-block", file, "--target-guard", plan.blocks[1].guard)).exitCode).toBe(0);
+      expect(JSON.parse((await myd(null, "blocks", file, "--json")).stdout).blocks.map(({ id, name, type, guard }: any) => ({ id, name, type, guard }))).toEqual(preview.blocks);
+    });
+
+    test("insert --before shifts the target itself; an edit that keeps the count reports no shift", async () => {
+      const file = fixture();
+      const plan = await planned(file);
+      const insert = JSON.parse((await myd("New.", "insert", file, "--target-guard", plan.blocks[2].guard, "--before", "--dry-run", "--json")).stdout);
+      expect(insert).toMatchObject({ block: "b2", before: "Beta.", after: "New.\n\nBeta.", shift: { from: "b2", by: 1 } });
+      const same = await myd("Beta!", "set-block", file, "--target-guard", plan.blocks[2].guard, "--dry-run", "--json");
+      expect(JSON.parse(same.stdout).shift).toBeNull();
+      expect(same.stderr).toBe("");
+    });
+
+    test("refuses a stale version (exit 3) and a wrong guard exactly as a real write would", async () => {
+      const file = fixture();
+      const plan = await planned(file);
+      const before = fs.readFileSync(file, "utf8");
+      const stale = await myd("X.", "set-block", file, "b1", "--expect", plan.blocks[1].guard, "--version", "stale", "--dry-run");
+      expect(stale.exitCode).toBe(3);
+      expect(stale.stderr).toContain("version mismatch");
+      expect(stale.stdout).toBe("");
+      const wrong = await myd("X.", "insert", file, "b1", "--expect", plan.blocks[3].guard, "--dry-run");
+      expect(wrong.exitCode).toBe(1);
+      expect(wrong.stderr).toContain(`guard ${plan.blocks[3].guard} is now at b3; refusing to edit b1`);
+      const gone = await myd("X.", "set-block", file, "--target-guard", "000000000000", "--dry-run");
+      expect(gone.exitCode).toBe(1);
+      expect(gone.stderr).toContain("no block carries guard");
+      expect(fs.readFileSync(file, "utf8")).toBe(before);
+    });
+  });
+
   test("block JSON provides the full source and its positional guard", async () => {
     const file = fixture();
     const result = await myd(null, "block", file, "b1", "--json");

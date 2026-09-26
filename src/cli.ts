@@ -5,7 +5,8 @@ import fs from "node:fs";
 import { spawn, execFileSync } from "node:child_process";
 import { STATE_FILE } from "./server.ts";
 import { loadDoc, reply as replyDoc, resolve as resolveDoc } from "./doc.ts";
-import { DocumentVersionConflict, mutateDocument } from "./document-mutation.ts";
+import { DocumentVersionConflict, mutateDocument, type DocumentMutationResult } from "./document-mutation.ts";
+import { unifiedDiff } from "./revision-diff.ts";
 import { topBlocks } from "./render.ts";
 import { getSemanticObject, listSemanticObjects, replaceSemanticObject } from "./semantic-objects.ts";
 import { InvalidPublicOrigin, normalizePublicOrigin, reviewUrl } from "./public-url.ts";
@@ -163,6 +164,21 @@ async function waitDone(port: number, file: string, timeoutSec: number, reviewId
 function blocksOf(file: string) {
   const doc = loadDoc(file, fs.readFileSync(file, "utf8"));
   return { doc, blocks: topBlocks(doc) };
+}
+
+// Issue #27: what `--dry-run` prints instead of writing. `result` came through the same mutateDocument
+// read/version/transform/reparse path as a real write, so every refusal has already happened by here.
+// `shiftFrom` is the first positional index whose id moves when the edit changes the block count:
+// the block after the target, or the target itself for insert --before.
+const DRY_RUN = !!flags["dry-run"];
+function dryRunReport(file: string, result: DocumentMutationResult, target: Record<string, string>, region: { before: string; after: string }, shiftFrom?: number) {
+  const before = topBlocks(result.previous), after = topBlocks(result.document), by = after.length - before.length;
+  const shift = shiftFrom !== undefined && by && shiftFrom < before.length ? { from: `b${shiftFrom}`, by } : null;
+  const diff = unifiedDiff(result.previous.source, result.document.source, { from: file, to: `${file} (dry-run)` });
+  if (JSON_OUT) return out({ ok: true, dryRun: true, ...target, version: result.previousVersion, before: region.before, after: region.after, diff, blocks: after.map(({ id, name, type, guard }) => ({ id, name, type, guard })), shift });
+  if (by) console.error(`warning: ${cmd === "insert" ? `this insert adds ${by} block${by === 1 ? "" : "s"}` : `this edit turns 1 block into ${1 + by}`}${shift ? `; positional ids ${shift.from}..b${before.length - 1} shift by ${by > 0 ? "+" : ""}${by}` : ""} (named ids and other blocks' content guards do not change)`);
+  process.stdout.write(diff);
+  console.log("dry-run: no changes written");
 }
 
 // `myd <cmd> --help` and `myd help <cmd>` render the same page; the flag is checked before the
@@ -334,7 +350,8 @@ switch (cmd) {
     if (!flags.version) die("set-object requires --version from myd objects --json");
     const replacement = flags.file ? fs.readFileSync(String(flags.file), "utf8") : await Bun.stdin.text();
     try {
-      const result = mutateDocument(file, (doc) => replaceSemanticObject(doc, pos[1] ?? "", replacement), { expectedVersion: String(flags.version) });
+      const result = mutateDocument(file, (doc) => replaceSemanticObject(doc, pos[1] ?? "", replacement), { expectedVersion: String(flags.version), dryRun: DRY_RUN });
+      if (DRY_RUN) { dryRunReport(file, result, { ref: pos[1]! }, { before: getSemanticObject(result.previous, pos[1]!)?.source ?? "", after: getSemanticObject(result.document, pos[1]!)?.source ?? "" }); break; }
       out({ ok: true, ref: pos[1], previousVersion: result.previousVersion, version: result.version }, `set-object ${pos[1]} ok`);
     } catch (error) { mutationError(error); }
     break;
@@ -349,7 +366,7 @@ switch (cmd) {
     if (!target && !targetGuard) die(`${cmd} requires a block id or --target-guard <guard> from myd blocks --json`);
     if (!flags.version && !expected && !targetGuard) die(`${cmd} requires --version from myd blocks --json, or a content guard (--expect / --target-guard) from that listing`);
     const content = (flags.file ? fs.readFileSync(String(flags.file), "utf8") : await Bun.stdin.text()).replace(/\s+$/, "");
-    let resolved = target ?? "";
+    let resolved = target ?? "", region = { before: "", after: "" }, shiftFrom = 0;
     try {
       const result = mutateDocument(file, (doc) => {
         const blocks = topBlocks(doc);
@@ -363,12 +380,12 @@ switch (cmd) {
           throw new Error(`${target} no longer matches --expect ${guard}, and no block carries that guard; the planned block was edited or removed — re-read it with myd blocks --json`);
         }
         resolved = b.id;
-        let body: string;
-        if (cmd === "set-block") body = doc.body.slice(0, b.start) + content + doc.body.slice(b.end);
-        else if (flags.before) body = doc.body.slice(0, b.start) + content + "\n\n" + doc.body.slice(b.start);
-        else body = doc.body.slice(0, b.end) + "\n\n" + content + doc.body.slice(b.end);
-        return body + doc.endmatter.raw;
-      }, flags.version ? { expectedVersion: String(flags.version) } : {});
+        const old = doc.body.slice(b.start, b.end);
+        shiftFrom = cmd === "insert" && flags.before ? b.index : b.index + 1;
+        region = { before: old, after: cmd === "set-block" ? content : flags.before ? content + "\n\n" + old : old + "\n\n" + content };
+        return doc.body.slice(0, b.start) + region.after + doc.body.slice(b.end) + doc.endmatter.raw;
+      }, { ...(flags.version ? { expectedVersion: String(flags.version) } : {}), dryRun: DRY_RUN });
+      if (DRY_RUN) { dryRunReport(file, result, { block: resolved }, region, shiftFrom); break; }
       out({ ok: true, block: resolved, previousVersion: result.previousVersion, version: result.version, relistRequired: false }, `${cmd} ${resolved} ok; other blocks keep their guards, positional ids may have shifted`);
     } catch (error) { mutationError(error); }
     break;
