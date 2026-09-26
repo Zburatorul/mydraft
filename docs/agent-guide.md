@@ -55,13 +55,19 @@ graph LR; A-->B
 ```
 EOF
 myd insert doc.md results --before --version <v> <<'EOF' … EOF   # insert before/after a block; obtain <v> from `myd blocks --json`
-myd set-block doc.md b17 --version <v> --expect <guard> <<'EOF' … EOF  # positional id: guard is mandatory
+myd set-block doc.md b17 --expect <guard> <<'EOF' … EOF  # positional id: guard is mandatory
 ```
 
 Positional ids shift when blocks are added; name anything you expect to revisit or that the user might comment on.
 
 > [!IMPORTANT]
-> **Re-list after every mutation before using another positional `bN` id.** A positional edit requires both the current document `--version` and that listing's per-block `--expect <guard>`. Any mutation invalidates all positional guards, so pairing a newly returned version with an old `bN` fails instead of editing shifted content. Authored names do not require `--expect` because their identity is stable.
+> **Plan once, address by guard.** A block's `guard` is a hash of its own source, so it names the block you planned to edit wherever it has moved. For a batch — even on a document with no authored names — take one `myd blocks --json` listing and apply every edit with `--target-guard <guard>` from *that* listing; no `--version`, no re-listing, any order. `bN --expect <guard>` also works, and fails with the block's new position if an earlier edit shifted it. **Never refresh a guard just before writing**: a guard read after the fact names whatever now occupies the position, which is exactly the wrong-block bug. A guard expires only when its own block changes; replies and resolutions do not touch it.
+
+```bash
+myd blocks doc.md --json > plan.json          # one listing for the whole batch
+myd set-block doc.md --target-guard 3e3561b3efaf --file new/costs.md
+myd set-block doc.md --target-guard 8fda4aa75bf8 --file new/why.md   # order does not matter
+```
 
 ## objects — what can be commented on (the annotation inventory)
 

@@ -42,7 +42,7 @@ flowchart TB
 
 A real agent edit sequence exposed a data-loss class that outranks presentation work: after one positional `set-block` inserted an extra Markdown node, the agent paired the returned current version with another `bN` from its old listing. The version was fresh but the identity was stale, so myd silently replaced the wrong block.
 
-The immediate prevention is implemented: every positional block listing now carries an opaque guard bound to that document version and position. `set-block` and `insert` require it as `--expect`; every mutation invalidates all positional guards and forces a re-list. Authored block names remain stable and do not need the extra guard. `myd block ID --json` now returns the complete source, version, and metadata for a final pre-write check.
+The first prevention bound each guard to the document version and position; that only proved freshness, and a re-list-then-write loop still retargeted shifted blocks ([#26](https://github.com/Zburatorul/mydraft/issues/26)). Guards are now content-addressed — a hash of the block's own source — so `--expect` asserts *which* block the caller planned to edit, `--target-guard` addresses it with no position at all, and a batch planned from one listing applies in any order or fails naming where the block went. Authored block names remain stable and do not need a guard. `myd block ID --json` now returns the complete source, version, and metadata for a final pre-write check.
 
 The next safety slice is the smallest local recovery mechanism for non-Git documents: preserve the exact pre-mutation source and expose one guarded undo operation. Do not build a history browser, branching revision model, provenance system, or general snapshot platform around it.
 

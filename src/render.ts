@@ -181,14 +181,20 @@ export function blockName(c: any, clean: string): string | null {
   if (c.type === "code") { const m = /\{#([A-Za-z][\w-]*)\}/.exec(c.meta ?? ""); return m ? m[1]! : null; }
   return null;
 }
+/** Content guard: hash of the block's exact source (inline markup included) plus its occurrence index
+ *  among identical blocks. It names *what* a caller planned to edit, independent of version and position,
+ *  so it survives unrelated edits elsewhere and fails when the target itself changed or moved. */
 function parsedTopBlocks(doc: Doc): Array<{ node: any; block: Block }> {
   const tree = unified().use(remarkParse).use(remarkFrontmatter, ["yaml"]).use(remarkGfm).use(remarkMath).parse(doc.clean) as MdRoot;
+  const seen = new Map<string, number>();
   return tree.children.map((c: any, i) => {
     const s = doc.cleanToOrig(c.position.start.offset), e = doc.cleanToOrig(c.position.end.offset);
     const type = c.type === "heading" ? `h${c.depth}` : c.type === "code" ? `code:${c.lang ?? ""}` : c.type === "paragraph" ? "para" : c.type;
     const name = blockName(c, doc.clean);
     const id = name ?? `b${i}`;
-    return { node: c, block: { id, index: i, name, type, start: s, end: e, head: doc.body.slice(s, e).split("\n")[0]!.slice(0, 80), guard: hashVersion(`${doc.version}\0${id}`) } };
+    const source = doc.body.slice(s, e), occurrence = seen.get(source) ?? 0;
+    seen.set(source, occurrence + 1);
+    return { node: c, block: { id, index: i, name, type, start: s, end: e, head: source.split("\n")[0]!.slice(0, 80), guard: hashVersion(`${source}\0${occurrence}`) } };
   });
 }
 

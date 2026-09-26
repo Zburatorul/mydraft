@@ -24,7 +24,7 @@ describe("CLI document mutation seam", () => {
   test("rejects unguarded block edits", async () => {
     const file = fixture();
     const comments = await myd(null, "comments", file);
-    expect(comments.stdout).toContain(`myd blocks ${JSON.stringify(file)} --json to get the version and positional guard`);
+    expect(comments.stdout).toContain(`myd blocks ${JSON.stringify(file)} --json once to get each block's guard`);
     const before = fs.readFileSync(file, "utf8");
     const result = await myd("Changed.", "set-block", file, "results");
     expect(result.exitCode).toBe(1);
@@ -88,9 +88,60 @@ describe("CLI document mutation seam", () => {
 
     const shifted = await myd("Third replacement.", "set-block", file, "b3", "--version", versionAfterFirstEdit, "--expect", thirdTarget.guard, "--json");
     expect(shifted.exitCode).not.toBe(0);
-    expect(shifted.stderr).toContain("re-list blocks");
+    expect(shifted.stderr).toContain(`guard ${thirdTarget.guard} is now at b4; refusing to edit b3`);
     expect(fs.readFileSync(file, "utf8")).toContain("Second target.");
     expect(fs.readFileSync(file, "utf8")).toContain("Third target.");
+  });
+
+  test("a batch planned from one listing lands on the intended blocks in any order (issue #26)", async () => {
+    const file = fixture();
+    fs.writeFileSync(file, "# Title\n\nAlpha.\n\nBeta.\n\nGamma.\n\nDelta.\n");
+    const plan = JSON.parse((await myd(null, "blocks", file, "--json")).stdout);
+    const guardOf = (id: string) => plan.blocks.find((block: { id: string }) => block.id === id).guard;
+
+    // First edit grows one block into three, shifting every later positional id by +2.
+    const grow = await myd("Alpha one.\n\nAlpha two.\n\nAlpha three.", "set-block", file, "b1", "--expect", guardOf("b1"), "--json");
+    expect(grow.exitCode).toBe(0);
+    // Planned positional id with its planned guard: refused with the block's new position, nothing written.
+    const before = fs.readFileSync(file, "utf8");
+    const stale = await myd("Gamma replaced.", "set-block", file, "b3", "--expect", guardOf("b3"));
+    expect(stale.exitCode).toBe(1);
+    expect(stale.stderr).toContain(`guard ${guardOf("b3")} is now at b5`);
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+    // Content addressing needs neither a position nor a fresh version.
+    for (const [id, text] of [["b4", "Delta replaced."], ["b2", "Beta replaced."], ["b3", "Gamma replaced."]] as const) {
+      const result = await myd(text, "set-block", file, "--target-guard", guardOf(id), "--json");
+      expect(result.exitCode).toBe(0);
+    }
+    expect(fs.readFileSync(file, "utf8")).toBe("# Title\n\nAlpha one.\n\nAlpha two.\n\nAlpha three.\n\nBeta replaced.\n\nGamma replaced.\n\nDelta replaced.\n");
+  });
+
+  test("a content guard fails loudly once its block was edited, and duplicate blocks keep distinct guards", async () => {
+    const file = fixture();
+    fs.writeFileSync(file, "# Title\n\nSame.\n\nSame.\n");
+    const plan = JSON.parse((await myd(null, "blocks", file, "--json")).stdout);
+    expect(plan.blocks[1].guard).not.toBe(plan.blocks[2].guard);
+    expect((await myd("Edited.", "set-block", file, "b2", "--expect", plan.blocks[2].guard)).exitCode).toBe(0);
+    const gone = await myd("Again.", "set-block", file, "--target-guard", plan.blocks[2].guard);
+    expect(gone.exitCode).toBe(1);
+    expect(gone.stderr).toContain("no block carries guard");
+    expect(fs.readFileSync(file, "utf8")).toBe("# Title\n\nSame.\n\nEdited.\n");
+  });
+
+  test("a supplied --version is still enforced alongside a content guard", async () => {
+    const file = fixture();
+    const listing = JSON.parse((await myd(null, "blocks", file, "--json")).stdout);
+    const result = await myd("Changed.", "set-block", file, "b1", "--version", "stale", "--expect", listing.blocks[1].guard);
+    expect(result.exitCode).toBe(3);
+  });
+
+  test("replies and resolutions do not invalidate planned guards", async () => {
+    const file = fixture();
+    const listing = JSON.parse((await myd(null, "blocks", file, "--json")).stdout);
+    await myd(null, "reply", file, "c1", "Answered");
+    await myd(null, "resolve", file, "c1");
+    const after = JSON.parse((await myd(null, "blocks", file, "--json")).stdout);
+    expect(after.blocks.map((block: { guard: string }) => block.guard)).toEqual(listing.blocks.map((block: { guard: string }) => block.guard));
   });
 
   test("a positional edit without its listing guard leaves the document unchanged", async () => {

@@ -298,7 +298,7 @@ switch (cmd) {
     };
     // document-level notes (Done Reviewing notes): a comment with no anchor text, no object anchor, no parent
     const slim = items.map(({ id, kind, suggestionKind, parentId, author, text, anchorText, originalText, replacementText, status, line, anchor }, index) => ({ id, kind: kind === "comment" && !anchorText && !anchor && !parentId ? "note" as const : kind, suggestionKind, parentId, author, status, line, anchorText, originalText, replacementText, anchor, context: contextFor(items[index]!), text }));
-    out({ path: file, version: doc.version, items: slim }, slim.map((i) => `${i.id} [${i.kind === "note" ? "note — document-level, from Done Reviewing" : i.kind}${i.parentId ? `→${i.parentId}` : ""}] ${i.author ?? "?"} L${i.line}${i.anchorText ? ` “${i.anchorText.slice(0, 60)}”` : ""}${i.anchor ? ` @${i.anchor.block}${i.anchor.target ? "›" + i.anchor.target : ""}` : ""}\n    ${i.kind === "suggestion" ? `${i.originalText} → ${i.replacementText}  ` : ""}${i.text}${i.context ? `\n    context: ${i.context}` : ""}`).join("\n") + (slim.length ? `\n\nNext: myd reply ${JSON.stringify(file)} <id> "…" (questions for the user go here too) · myd blocks ${JSON.stringify(file)} --json to get the version and positional guard before myd set-block/insert · myd resolve <id> · then hand back: myd view ${JSON.stringify(file)}` : "") || "no pending items");
+    out({ path: file, version: doc.version, items: slim }, slim.map((i) => `${i.id} [${i.kind === "note" ? "note — document-level, from Done Reviewing" : i.kind}${i.parentId ? `→${i.parentId}` : ""}] ${i.author ?? "?"} L${i.line}${i.anchorText ? ` “${i.anchorText.slice(0, 60)}”` : ""}${i.anchor ? ` @${i.anchor.block}${i.anchor.target ? "›" + i.anchor.target : ""}` : ""}\n    ${i.kind === "suggestion" ? `${i.originalText} → ${i.replacementText}  ` : ""}${i.text}${i.context ? `\n    context: ${i.context}` : ""}`).join("\n") + (slim.length ? `\n\nNext: myd reply ${JSON.stringify(file)} <id> "…" (questions for the user go here too) · myd blocks ${JSON.stringify(file)} --json once to get each block's guard, then myd set-block/insert --target-guard <guard> · myd resolve <id> · then hand back: myd view ${JSON.stringify(file)}` : "") || "no pending items");
     break;
   }
   case "reply": {
@@ -341,24 +341,35 @@ switch (cmd) {
   }
   case "set-block": case "insert": {
     const file = abs(pos[0]);
-    if (!flags.version) die(`${cmd} requires --version from myd blocks --json`);
+    // A content guard (--expect / --target-guard) names the block the caller planned to edit, so it is
+    // itself the concurrency check for that region: --version becomes optional and a batch planned from
+    // one listing can apply in any order. Without one, only an authored name is stable enough to target.
+    const expected = flags.expect ? String(flags.expect) : undefined, targetGuard = flags["target-guard"] ? String(flags["target-guard"]) : undefined;
+    const target = pos[1] && pos[1] !== "-" ? pos[1] : undefined;
+    if (!target && !targetGuard) die(`${cmd} requires a block id or --target-guard <guard> from myd blocks --json`);
+    if (!flags.version && !expected && !targetGuard) die(`${cmd} requires --version from myd blocks --json, or a content guard (--expect / --target-guard) from that listing`);
     const content = (flags.file ? fs.readFileSync(String(flags.file), "utf8") : await Bun.stdin.text()).replace(/\s+$/, "");
-    let positional = false;
+    let resolved = target ?? "";
     try {
       const result = mutateDocument(file, (doc) => {
         const blocks = topBlocks(doc);
-        const b = blocks.find((x) => x.id === pos[1] || `b${x.index}` === pos[1]);
-        if (!b) throw new Error(`no block ${pos[1]}`);
-        positional = !b.name;
-        if (positional && !flags.expect) throw new Error(`positional block ${pos[1]} requires --expect <guard> from myd blocks --json; re-list blocks after every mutation`);
-        if (positional && flags.expect !== b.guard) throw new Error(`positional block ${pos[1]} no longer matches --expect; re-list blocks before editing again`);
+        const guard = targetGuard ?? expected;
+        const holder = guard ? blocks.find((x) => x.guard === guard) : undefined;
+        const b = target ? blocks.find((x) => x.id === target || `b${x.index}` === target) : holder;
+        if (!b) throw new Error(target ? `no block ${target}` : `no block carries guard ${guard}; the planned block was edited or removed — re-read it with myd blocks --json`);
+        if (target && !b.name && !guard) throw new Error(`positional block ${target} requires --expect <guard> from myd blocks --json (or address it with --target-guard)`);
+        if (guard && b.guard !== guard) {
+          if (holder) throw new Error(`guard ${guard} is now at ${holder.id}; refusing to edit ${target} (the block you planned has moved — use --target-guard ${guard}, or ${holder.id})`);
+          throw new Error(`${target} no longer matches --expect ${guard}, and no block carries that guard; the planned block was edited or removed — re-read it with myd blocks --json`);
+        }
+        resolved = b.id;
         let body: string;
         if (cmd === "set-block") body = doc.body.slice(0, b.start) + content + doc.body.slice(b.end);
         else if (flags.before) body = doc.body.slice(0, b.start) + content + "\n\n" + doc.body.slice(b.start);
         else body = doc.body.slice(0, b.end) + "\n\n" + content + doc.body.slice(b.end);
         return body + doc.endmatter.raw;
-      }, { expectedVersion: String(flags.version) });
-      out({ ok: true, block: pos[1], previousVersion: result.previousVersion, version: result.version, relistRequired: positional }, `${cmd} ${pos[1]} ok${positional ? "; re-list blocks before another positional edit" : ""}`);
+      }, flags.version ? { expectedVersion: String(flags.version) } : {});
+      out({ ok: true, block: resolved, previousVersion: result.previousVersion, version: result.version, relistRequired: false }, `${cmd} ${resolved} ok; other blocks keep their guards, positional ids may have shifted`);
     } catch (error) { mutationError(error); }
     break;
   }

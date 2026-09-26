@@ -23,9 +23,9 @@ export type CommandHelp = {
 
 const JSON_FLAG: [string, string] = ["--json", "machine-readable output"];
 const GUARD_RULES = [
-  "--version is the document version from `myd blocks --json`; a stale one fails with exit 3 and writes nothing.",
-  "A named block (`## Results {#results}`) needs only --version. A positional id (`b3`) also needs --expect <guard>, because positions shift.",
-  "Every mutation advances the version and rewrites guards, so re-list blocks before the next positional edit.",
+  "A guard is a hash of the block's own source: it names *what* you planned to edit, not where it sits. Edits elsewhere, replies and resolutions leave it unchanged.",
+  "A positional id (`b3`) needs --expect <guard>; if that content has moved, the write fails and names its new position. --target-guard G addresses the block by content alone, with no id.",
+  "With a guard, --version is optional, so a batch planned from one listing applies in any order. A named block (`## Results {#results}`) without a guard needs --version. A supplied --version is always enforced (stale: exit 3, nothing written).",
 ];
 
 export const COMMANDS: Record<string, CommandHelp> = {
@@ -164,7 +164,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
       "`--json` additionally carries the document version.",
     args: [["<file.md>", "the document to inspect"]],
     flags: [JSON_FLAG],
-    sections: [["Versioning", ["Guards change on every mutation — re-run this between guarded edits rather than reusing an earlier listing."]]],
+    sections: [["Versioning", ["Guards hash each block's source, so one listing stays valid for a whole batch: a guard only expires when its own block is edited."]]],
     example: ["myd blocks plans/roadmap.md --json"],
     seeAlso: ["myd block", "myd set-block", "myd guide blocks"],
   },
@@ -180,32 +180,34 @@ export const COMMANDS: Record<string, CommandHelp> = {
   },
   "set-block": {
     group: "source",
-    syntax: "<file.md> <block-id> --version V [--expect G] [--file F]",
+    syntax: "<file.md> (<block-id> [--expect G] | --target-guard G) [--version V] [--file F]",
     summary: "replace one block's source (guarded)",
     detail: "Reads the replacement from --file, or from stdin when --file is omitted. Trailing whitespace is stripped.",
     args: [["<file.md>", "the document"], ["<block-id>", "named id (`results`) or positional id (`b3`) from `myd blocks`"]],
     flags: [
-      ["--version V", "required; document version from `myd blocks --json`"],
-      ["--expect G", "required for positional ids; that block's guard from `myd blocks --json`"],
+      ["--version V", "document version from `myd blocks --json`; required unless a guard is given"],
+      ["--expect G", "required for positional ids; that block's guard from your planning listing"],
+      ["--target-guard G", "address the block by its guard instead of an id"],
       ["--file F", "read the replacement from F instead of stdin"],
       JSON_FLAG,
     ],
     sections: [["Versioning and guards", GUARD_RULES]],
     example: [
-      "myd blocks plans/roadmap.md --json                       # read version and guard",
-      'echo "Rewritten." | myd set-block plans/roadmap.md results --version 7 --json',
+      "myd blocks plans/roadmap.md --json                       # plan once: read guards",
+      'echo "Rewritten." | myd set-block plans/roadmap.md --target-guard 3e3561b3efaf --json',
     ],
     seeAlso: ["myd blocks", "myd insert", "myd guide blocks"],
   },
   insert: {
     group: "source",
-    syntax: "<file.md> <block-id> --version V [--expect G] [--before] [--file F]",
+    syntax: "<file.md> (<block-id> [--expect G] | --target-guard G) [--version V] [--before] [--file F]",
     summary: "insert new content after (or before) a block (guarded)",
     detail: "Reads the new content from --file, or from stdin when --file is omitted. Same guard rules as set-block.",
     args: [["<file.md>", "the document"], ["<block-id>", "the block to insert relative to"]],
     flags: [
-      ["--version V", "required; document version from `myd blocks --json`"],
-      ["--expect G", "required for positional ids; that block's guard from `myd blocks --json`"],
+      ["--version V", "document version from `myd blocks --json`; required unless a guard is given"],
+      ["--expect G", "required for positional ids; that block's guard from your planning listing"],
+      ["--target-guard G", "address the block by its guard instead of an id"],
       ["--before", "insert before the block instead of after it"],
       ["--file F", "read the new content from F instead of stdin"],
       JSON_FLAG,
