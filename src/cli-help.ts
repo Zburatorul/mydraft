@@ -338,17 +338,21 @@ export const COMMANDS: Record<string, CommandHelp> = {
   },
   "install-prompt": {
     group: "setup",
-    syntax: "[--claude|--codex|--file F] [--remove]",
+    syntax: "[--claude|--codex|--file F] [--bin-dir DIR] [--remove]",
     brief: "",
-    summary: "(re)install the myd block into agent instruction files",
+    summary: "(re)install the myd block, skill and `myd` launcher",
     detail:
-      "Idempotent: it replaces the marker-delimited block rather than appending, and symlinks skill/\n" +
-      "into each agent's skills directory. Defaults to both Claude and Codex targets.",
+      "Idempotent: it replaces the marker-delimited block rather than appending, symlinks skill/\n" +
+      "into each agent's skills directory, and links ~/.local/bin/myd to this checkout's src/cli.ts\n" +
+      "(an existing myd that is not such a symlink is left alone with a warning; a bin dir missing\n" +
+      "from PATH is warned about). Paths come from the checkout it runs from, so run it again after\n" +
+      "moving the repo. Defaults to both Claude and Codex targets.",
     flags: [
       ["--claude", "only ~/.claude/CLAUDE.md and ~/.claude/skills/myd"],
       ["--codex", "only $CODEX_HOME/AGENTS.md and its skills directory"],
-      ["--file F", "target an arbitrary instruction file instead (no skill symlink)"],
-      ["--remove", "uninstall the managed block and the skill symlink"],
+      ["--file F", "target an arbitrary instruction file instead (no skill symlink or launcher)"],
+      ["--bin-dir DIR", "put the myd launcher in DIR instead of ~/.local/bin"],
+      ["--remove", "uninstall the managed block, the skill symlink and (unscoped) our launcher"],
       JSON_FLAG,
     ],
     example: ["myd install-prompt --claude"],
