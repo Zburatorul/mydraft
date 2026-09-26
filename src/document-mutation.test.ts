@@ -78,6 +78,23 @@ describe("mutateDocument", () => {
     expect(fs.statSync(source).mode & 0o7777).toBe(0o640);
   });
 
+  test("dryRun runs the same checks and reparse but writes nothing", () => {
+    const source = path.join(workspace(), "draft.md");
+    fs.writeFileSync(source, "# Before\n");
+    const inode = fs.statSync(source).ino;
+
+    const preview = mutateDocument(source, (document) => `${document.source}After\n`, { dryRun: true });
+    expect(preview.dryRun).toBe(true);
+    expect(preview.previous.source).toBe("# Before\n");
+    expect(preview.document.source).toBe("# Before\nAfter\n");
+    expect(preview.version).not.toBe(preview.previousVersion);
+    expect(fs.readFileSync(source, "utf8")).toBe("# Before\n");
+    expect(fs.statSync(source).ino).toBe(inode);
+    expect(() => mutateDocument(source, () => "# x\n", { expectedVersion: "stale", dryRun: true })).toThrow(DocumentVersionConflict);
+    expect(() => mutateDocument(source, () => { throw new Error("invalid"); }, { dryRun: true })).toThrow("invalid");
+    expect(mutateDocument(source, (document) => document.source).dryRun).toBe(false);
+  });
+
   test("leaves the document untouched when the transform fails", () => {
     const source = path.join(workspace(), "draft.md");
     fs.writeFileSync(source, "# Safe\n");

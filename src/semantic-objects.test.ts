@@ -171,6 +171,38 @@ describe("semantic object CLI", () => {
     expect(fs.readFileSync(file, "utf8")).toBe(before);
   }, 15_000);
 
+  test("--dry-run validates the object like a real write and writes nothing (issue #27)", async () => {
+    const file = fixture();
+    const before = fs.readFileSync(file, "utf8");
+    const inventory = JSON.parse((await myd("objects", file, "--json")).stdout);
+    const valid = [
+      "id: alice-trigger", "party: Alice", "observes: local clock reaches the deadline",
+      "action: close Alice's epoch", "locality: local", "synchronization: derived", "",
+    ].join("\n");
+
+    const preview = await mydWithInput(valid, "set-object", file, "epoch›alice-trigger", "--version", inventory.version, "--dry-run", "--json");
+    expect(preview.exitCode).toBe(0);
+    const report = JSON.parse(preview.stdout);
+    expect(report).toMatchObject({ ok: true, dryRun: true, ref: "epoch›alice-trigger", version: inventory.version, shift: null });
+    expect(report.before).toContain("observes: detector A fires");
+    expect(report.after).toContain("observes: local clock reaches the deadline");
+    expect(report.diff).toContain("-        observes: detector A fires\n+        observes: local clock reaches the deadline");
+    expect(report.blocks.map((block: { id: string }) => block.id)).toEqual(["b0", "epoch"]);
+    const human = await mydWithInput(valid, "set-object", file, "epoch›alice-trigger", "--version", inventory.version, "--dry-run");
+    expect(human.stdout.trimEnd().endsWith("dry-run: no changes written")).toBe(true);
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+
+    const invalid = await mydWithInput("id: alice-trigger\n", "set-object", file, "epoch›alice-trigger", "--version", inventory.version, "--dry-run");
+    expect(invalid.exitCode).toBe(1);
+    expect(invalid.stderr).toContain("alice-trigger.party must be non-empty text");
+    const broken = await mydWithInput("id: alice-trigger\nparty: [unclosed\n", "set-object", file, "epoch›alice-trigger", "--version", inventory.version, "--dry-run");
+    expect(broken.exitCode).toBe(1);
+    expect(broken.stdout).toBe("");
+    const stale = await mydWithInput(valid, "set-object", file, "epoch›alice-trigger", "--version", "stale", "--dry-run");
+    expect(stale.exitCode).toBe(3);
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  }, 15_000);
+
   test("rejects an ambiguous block›target identity", async () => {
     const file = fixture();
     fs.appendFileSync(file, [

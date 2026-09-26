@@ -73,6 +73,8 @@ myd set-block doc.md b17 --expect <guard> <<'EOF' … EOF  # positional id: guar
 
 Positional ids shift when blocks are added; name anything you expect to revisit or that the user might comment on.
 
+Before a multi-block edit (a replacement that splits one block into several, or an insert), run it once with `--dry-run`: same validation as the real write, prints the unified diff and which positional ids would shift, writes nothing (`--json` adds the resulting block list with guards).
+
 > [!IMPORTANT]
 > **Plan once, address by guard.** A block's `guard` is a hash of its own source, so it names the block you planned to edit wherever it has moved. For a batch — even on a document with no authored names — take one `myd blocks --json` listing and apply every edit with `--target-guard <guard>` from *that* listing; no `--version`, no re-listing, any order. `bN --expect <guard>` also works, and fails with the block's new position if an earlier edit shifted it. **Never refresh a guard just before writing**: a guard read after the fact names whatever now occupies the position, which is exactly the wrong-block bug. A guard expires only when its own block changes; replies and resolutions do not touch it.
 
