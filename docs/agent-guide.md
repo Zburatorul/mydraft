@@ -29,11 +29,24 @@ myd view /abs/doc.md                 # hand revisions back, nonblocking
 Reading `myd comments` output:
 
 ```
-c6 [comment] user L28 @b7               ← object comment on block b7 (whole block)
-c5 [comment] user L14 @flow›node:Viewer ← object comment on Mermaid node "Viewer" in block {#flow}
-s1 [suggestion] user L40                ← originalText → replacementText, then optional note
-c2 [reply→s1] user L54                  ← thread reply
-c10 [comment] user L54                  ← document-level comment (the Done note)
+c3 [comment] user @b7 (guard 3e3561b3efaf, ~L38) “quoted text”  ← inline comment in block b7
+c6 [comment] user @b7 (guard 3e3561b3efaf, ~L28)                 ← object comment on block b7 (whole block)
+c5 [comment] user @flow›node:Viewer (guard 8fda4aa75bf8, ~L14)   ← object comment on Mermaid node "Viewer" in block {#flow}
+s1 [suggestion] user @costs (guard 1b2c3d4e5f60, ~L40) “ten”     ← originalText → replacementText, then optional note
+c2 [reply→s1] user L54                                           ← thread reply (no anchor of its own)
+c10 [note — document-level, from Done Reviewing] user L54         ← the Done note (no anchor)
+```
+
+`@` is the block's authored name or its *current* positional id; the `guard` is that block's content guard, the same value `myd blocks --json` prints, and `~L` is only a hint. In `--json` each item carries
+`anchor: {block, name, guard, target?, quote, quoteOccurrence, lineApprox}` — `name` is `null` for an unnamed block, `target` is the object inside the block (object comments only), `quote` the anchored text and `quoteOccurrence` the 0-based index of that exact text among its identical occurrences in the marker-free document. Replies and document-level notes have `anchor: null`; the old top-level `line` stays for compatibility.
+
+**Comment → edit round trip, no positional ids:**
+
+```bash
+myd comments doc.md --json                               # c3 … "anchor": {"block": "b7", "guard": "3e3561b3efaf", …}
+myd set-block doc.md --target-guard 3e3561b3efaf --file new.md   # hits the commented block even if earlier edits moved it
+myd reply doc.md c3 "Reworded as asked."
+myd resolve doc.md c3
 ```
 
 ## blocks — addressing and editing by block
