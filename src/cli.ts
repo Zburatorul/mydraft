@@ -182,7 +182,9 @@ switch (cmd) {
   }
   case "install-prompt": {
     const block = fs.readFileSync(path.join(ROOT, "docs/prompt.md"), "utf8").trim();
-    const BEGIN = "<!-- myd:begin (managed by `myd install-prompt`; edit ~/LocalDev/mydraft/docs/prompt.md instead) -->", END = "<!-- myd:end -->";
+    // The marker names this checkout, wherever it lives; the match accepts any marker text so a
+    // block installed from another checkout (or an older release) is replaced, not duplicated.
+    const BEGIN = `<!-- myd:begin (managed by \`myd install-prompt\`; edit ${path.join(ROOT, "docs/prompt.md")} instead) -->`, END = "<!-- myd:end -->";
     const home = require("node:os").homedir();
     const targets: string[] = [];
     if (flags.file) targets.push(path.resolve(String(flags.file)));
@@ -191,7 +193,7 @@ switch (cmd) {
     for (const t of targets) {
       fs.mkdirSync(path.dirname(t), { recursive: true });
       const cur = fs.existsSync(t) ? fs.readFileSync(t, "utf8") : "";
-      const re = new RegExp(`\\n?${BEGIN.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n?`);
+      const re = /\n?<!-- myd:begin\b[^\n]*?-->[\s\S]*?<!-- myd:end -->\n?/;
       const had = re.test(cur);
       let next = cur.replace(re, "\n");
       // also strip a legacy unmanaged block (Roughdraft's, or an earlier hand-written myd block) that starts with a known heading
@@ -214,7 +216,33 @@ switch (cmd) {
       if (exists) fs.rmSync(t, { recursive: true, force: true });
       fs.symlinkSync(skillSrc, t); results.push({ file: t, action: "linked" });
     }
-    out(results, results.map((r) => `${r.action.padEnd(9)} ${r.file}`).join("\n")); break;
+    // launcher: <bin-dir>/myd → this checkout's cli.ts, so `myd` works wherever the repo lives.
+    // Only a symlink into a mydraft checkout (…/src/cli.ts) counts as ours; anything else is left alone.
+    // A scoped --remove (--claude/--codex) keeps it, since the other agent may still use it.
+    const cliSrc = path.join(ROOT, "src/cli.ts");
+    const binDir = path.resolve(typeof flags["bin-dir"] === "string" ? flags["bin-dir"] : path.join(home, ".local/bin"));
+    const launcher = path.join(binDir, "myd");
+    const warn = (m: string) => { console.error(`Warning: ${m}`); return m; };
+    if (!flags.file && !(flags.remove && (flags.claude || flags.codex))) {
+      let link: string | null = null, present = false;
+      try { const st = fs.lstatSync(launcher); present = true; if (st.isSymbolicLink()) link = path.resolve(binDir, fs.readlinkSync(launcher)); } catch {}
+      let points = false; try { points = link !== null && fs.realpathSync(link) === fs.realpathSync(cliSrc); } catch {}
+      const owned = link !== null && (points || link.endsWith(path.join(path.sep, "src", "cli.ts")));
+      if (flags.remove) {
+        if (points) fs.rmSync(launcher);
+        results.push({ file: launcher, action: points ? "removed" : present ? "kept" : "absent", ...(present && !points ? { warning: warn(`${launcher} does not point to ${cliSrc}; left in place`) } : {}) });
+      } else if (points) results.push({ file: launcher, action: "unchanged" });
+      else if (present && !owned) results.push({ file: launcher, action: "skipped", warning: warn(`${launcher} exists and is not a myd symlink; left in place (remove it, or pass --bin-dir DIR)`) });
+      else {
+        try { const mode = fs.statSync(cliSrc).mode; if (!(mode & 0o111)) fs.chmodSync(cliSrc, mode | 0o755); } catch {}
+        fs.mkdirSync(binDir, { recursive: true });
+        if (present) fs.rmSync(launcher);
+        fs.symlinkSync(cliSrc, launcher); results.push({ file: launcher, action: present ? "relinked" : "linked" });
+      }
+      const onPath = (process.env.PATH ?? "").split(path.delimiter).some((d) => d && path.resolve(d) === binDir);
+      if (!flags.remove && results.at(-1).action !== "skipped" && !onPath) results.at(-1).warning = warn(`${binDir} is not on PATH; add it (e.g. export PATH="${binDir}:$PATH") so \`myd\` resolves`);
+    }
+    out(results, [`myd checkout ${ROOT}`, ...results.map((r) => `${r.action.padEnd(9)} ${r.file}`)].join("\n")); break;
   }
   case "guide": {
     const g = fs.readFileSync(path.join(ROOT, "docs/agent-guide.md"), "utf8");
