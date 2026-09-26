@@ -96,8 +96,13 @@ export const COMMANDS: Record<string, CommandHelp> = {
         "An item marked `note` is document-level, produced by Done Reviewing. It has no anchor and is neither replyable nor resolvable, so it reappears on every call until the document changes.",
         "A question for the user belongs in `myd reply`, not in chat; then hand the document back with `myd view`.",
       ]],
+      ["Anchor", [
+        "Each item prints `@<name-or-bN>[›target] (guard G, ~L<line>) “quote”`: the block it sits in now, that block's content guard, and an approximate line.",
+        "With --json: `anchor: {block, name, guard, target?, quote, quoteOccurrence, lineApprox}`; `quoteOccurrence` is the 0-based index among identical occurrences of the quote. Replies and notes have `anchor: null`.",
+        "Round trip with no positional ids: take `anchor.guard` → `myd set-block FILE --target-guard G --file new.md` → `myd reply` → `myd resolve`. The guard survives edits to other blocks, replies and resolutions.",
+      ]],
     ],
-    example: ["myd comments plans/roadmap.md --json"],
+    example: ["myd comments plans/roadmap.md --json", "myd set-block plans/roadmap.md --target-guard 3e3561b3efaf --file new.md"],
     seeAlso: ["myd reply", "myd resolve", "myd guide workflow"],
   },
   reply: {

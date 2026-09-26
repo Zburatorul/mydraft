@@ -296,9 +296,24 @@ switch (cmd) {
       const snippet = doc.clean.slice(from, to).replace(/\s+/g, " ").trim();
       return `${from > blockStart ? "…" : ""}${snippet}${to < blockEnd ? "…" : ""}`;
     };
+    // stable anchor (#29): the block's current id, authored name and content guard (pass it straight to --target-guard), the quoted
+    // text and which of its identical occurrences in the clean text this is; line is only a hint. Replies and document-level notes: null.
+    const occurrence = (quote: string, at: number) => { let n = 0; for (let i = doc.clean.indexOf(quote); i >= 0 && i < at; i = doc.clean.indexOf(quote, i + 1)) n++; return n; };
+    const anchorFor = (item: typeof items[number], note: boolean) => {
+      if (item.parentId || note) return null;
+      // inline markup lives inside its block; an object comment sits on its own line right after the block it anchors, so the body
+      // offset finds it even when the endmatter `anchor.block` is a positional id recorded before later edits shifted the blocks
+      const block = blocks.find((b) => item.offset >= b.start && item.endOffset <= b.end) ?? blocks.filter((b) => b.end <= item.offset).at(-1);
+      const inline = item.anchorText || item.originalText || (item.cleanEndOffset > item.cleanOffset ? doc.clean.slice(item.cleanOffset, item.cleanEndOffset) : "");
+      const quote = inline || item.anchor?.quote || null;
+      // a suggestion's text starts at cleanOffset; a comment's {==highlight==} ends where its {>>…<<} begins
+      const at = !quote ? -1 : !inline ? doc.clean.indexOf(quote, block ? doc.origToClean(block.start) : 0) : doc.clean.startsWith(quote, item.cleanOffset) ? item.cleanOffset : doc.clean.lastIndexOf(quote, item.cleanOffset - quote.length);
+      return { block: block?.id ?? null, name: block?.name ?? null, guard: block?.guard ?? null, ...(item.anchor?.target ? { target: item.anchor.target } : {}), quote, quoteOccurrence: quote && at >= 0 ? occurrence(quote, at) : null, lineApprox: item.line };
+    };
     // document-level notes (Done Reviewing notes): a comment with no anchor text, no object anchor, no parent
-    const slim = items.map(({ id, kind, suggestionKind, parentId, author, text, anchorText, originalText, replacementText, status, line, anchor }, index) => ({ id, kind: kind === "comment" && !anchorText && !anchor && !parentId ? "note" as const : kind, suggestionKind, parentId, author, status, line, anchorText, originalText, replacementText, anchor, context: contextFor(items[index]!), text }));
-    out({ path: file, version: doc.version, items: slim }, slim.map((i) => `${i.id} [${i.kind === "note" ? "note — document-level, from Done Reviewing" : i.kind}${i.parentId ? `→${i.parentId}` : ""}] ${i.author ?? "?"} L${i.line}${i.anchorText ? ` “${i.anchorText.slice(0, 60)}”` : ""}${i.anchor ? ` @${i.anchor.block}${i.anchor.target ? "›" + i.anchor.target : ""}` : ""}\n    ${i.kind === "suggestion" ? `${i.originalText} → ${i.replacementText}  ` : ""}${i.text}${i.context ? `\n    context: ${i.context}` : ""}`).join("\n") + (slim.length ? `\n\nNext: myd reply ${JSON.stringify(file)} <id> "…" (questions for the user go here too) · myd blocks ${JSON.stringify(file)} --json once to get each block's guard, then myd set-block/insert --target-guard <guard> · myd resolve <id> · then hand back: myd view ${JSON.stringify(file)}` : "") || "no pending items");
+    const slim = items.map(({ id, kind, suggestionKind, parentId, author, text, anchorText, originalText, replacementText, status, line, anchor }, index) => { const note = kind === "comment" && !anchorText && !anchor && !parentId; return { id, kind: note ? "note" as const : kind, suggestionKind, parentId, author, status, line, anchorText, originalText, replacementText, anchor: anchorFor(items[index]!, note), context: contextFor(items[index]!), text }; });
+    const where = (a: NonNullable<typeof slim[number]["anchor"]>) => `@${a.block ?? "?"}${a.target ? "›" + a.target : ""} (${a.guard ? `guard ${a.guard}, ` : ""}~L${a.lineApprox})${a.quote ? ` “${a.quote.slice(0, 60)}${a.quote.length > 60 ? "…" : ""}”` : ""}`;
+    out({ path: file, version: doc.version, items: slim }, slim.map((i) => `${i.id} [${i.kind === "note" ? "note — document-level, from Done Reviewing" : i.kind}${i.parentId ? `→${i.parentId}` : ""}] ${i.author ?? "?"} ${i.anchor ? where(i.anchor) : `L${i.line}`}\n    ${i.kind === "suggestion" ? `${i.originalText} → ${i.replacementText}  ` : ""}${i.text}${i.context ? `\n    context: ${i.context}` : ""}`).join("\n") + (slim.length ? `\n\nNext: myd reply ${JSON.stringify(file)} <id> "…" (questions for the user go here too) · edit the commented block by the guard printed above: myd set-block ${JSON.stringify(file)} --target-guard <guard> --file new.md (no block id, no re-listing) · myd resolve <id> · then hand back: myd view ${JSON.stringify(file)}` : "") || "no pending items");
     break;
   }
   case "reply": {

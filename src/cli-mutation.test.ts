@@ -24,7 +24,7 @@ describe("CLI document mutation seam", () => {
   test("rejects unguarded block edits", async () => {
     const file = fixture();
     const comments = await myd(null, "comments", file);
-    expect(comments.stdout).toContain(`myd blocks ${JSON.stringify(file)} --json once to get each block's guard`);
+    expect(comments.stdout).toContain(`edit the commented block by the guard printed above: myd set-block ${JSON.stringify(file)} --target-guard <guard>`);
     const before = fs.readFileSync(file, "utf8");
     const result = await myd("Changed.", "set-block", file, "results");
     expect(result.exitCode).toBe(1);
@@ -40,6 +40,54 @@ describe("CLI document mutation seam", () => {
 
     expect(item.anchorText).toBe("fully chosen fra");
     expect(item.context).toBe("A paragraph with a carefully chosen fragment in context.");
+  });
+
+  test("comments report a stable anchor: current block, name, guard, quote occurrence", async () => {
+    const file = fixture();
+    fs.writeFileSync(file, "# Title\n\nSame words, then {==Same words==}{>>second<<}{#c1} again.\n\n## Results {#results}\n\nWe pay {~~ten~>twelve~~}{#s1} dollars.\n\n```mermaid\nflowchart LR\n  A-->B\n```\n{>>about A<<}{#c2}\n\n---\ncomments:\n  c1: {by: user, status: open}\n  c2: {by: user, status: open, anchor: {block: b9, target: \"node:A\"}}\n  c3: {body: \"ok\", by: AI, re: c1}\n");
+    const blocks = JSON.parse((await myd(null, "blocks", file, "--json")).stdout).blocks as Array<{ id: string; guard: string }>;
+    const guardOf = (id: string) => blocks.find((b) => b.id === id)!.guard;
+    const items = JSON.parse((await myd(null, "comments", file, "--json")).stdout).items as any[];
+    const byId = Object.fromEntries(items.map((i) => [i.id, i]));
+    expect(byId.c1.anchor).toEqual({ block: "b1", name: null, guard: guardOf("b1"), quote: "Same words", quoteOccurrence: 1, lineApprox: 3 });
+    expect(byId.c1.line).toBe(3);
+    expect(byId.s1.anchor).toMatchObject({ block: "b3", guard: guardOf("b3"), quote: "ten", quoteOccurrence: 0 });
+    // the recorded endmatter block id (b9) is stale; the body position wins
+    expect(byId.c2.anchor).toMatchObject({ block: "b4", name: null, guard: guardOf("b4"), target: "node:A", quote: null });
+    expect(byId.c3.anchor).toBeNull();
+    fs.writeFileSync(file, "# Title\n\n## Results {#results}\n\nWe pay {==ten==}{>>why?<<}{#c1} dollars.\n\n---\ncomments:\n  c1: {by: user, status: open}\n");
+    const shifted = JSON.parse((await myd(null, "comments", file, "--json")).stdout).items[0].anchor;
+    expect(shifted).toMatchObject({ block: "b2", name: null, quote: "ten" });
+    const human = (await myd(null, "comments", file)).stdout;
+    expect(human).toContain(`c1 [comment] user @b2 (guard ${shifted.guard}, ~L5) “ten”`);
+  });
+
+  test("named block comments report the authored name", async () => {
+    const file = fixture();
+    fs.writeFileSync(file, "# Title\n\n## Results {#results}\n\nWe pay {==ten==}{>>why?<<}{#c1} dollars.\n\n```mermaid {#flow}\nflowchart LR\n  A-->B\n```\n{>>node<<}{#c2}\n\n---\ncomments:\n  c1: {by: user, status: open}\n  c2: {by: user, status: open, anchor: {block: flow, target: \"node:A\"}}\n");
+    const blocks = JSON.parse((await myd(null, "blocks", file, "--json")).stdout).blocks as Array<{ id: string; guard: string }>;
+    const items = JSON.parse((await myd(null, "comments", file, "--json")).stdout).items as any[];
+    expect(items[1].anchor).toMatchObject({ block: "flow", name: "flow", guard: blocks.find((b) => b.id === "flow")!.guard, target: "node:A" });
+    expect((await myd(null, "comments", file)).stdout).toContain("c2 [comment] user @flow›node:A (guard ");
+  });
+
+  test("comment guard survives earlier edits and still addresses the commented block", async () => {
+    const file = fixture();
+    fs.writeFileSync(file, "# Title\n\nIntro.\n\nFix {==this==}{>>reword<<}{#c1} line.\n\nOutro.\n\n---\ncomments:\n  c1: {by: user, status: open}\n");
+    const guard = JSON.parse((await myd(null, "comments", file, "--json")).stdout).items[0].anchor.guard;
+    const introGuard = JSON.parse((await myd(null, "blocks", file, "--json")).stdout).blocks[1].guard;
+    // an earlier edit shifts every later positional id
+    expect((await myd("Intro.\n\nA brand new paragraph.", "set-block", file, "--target-guard", introGuard)).exitCode).toBe(0);
+    const after = JSON.parse((await myd(null, "comments", file, "--json")).stdout).items[0].anchor;
+    expect(after).toMatchObject({ block: "b3", guard });
+    const newFile = path.join(path.dirname(file), "new.md");
+    fs.writeFileSync(newFile, "Fix {==this==}{>>reword<<}{#c1} sentence, reworded.");
+    const set = await myd(null, "set-block", file, "--target-guard", guard, "--file", newFile);
+    expect(set.exitCode).toBe(0);
+    expect((await myd(null, "reply", file, "c1", "Reworded.")).exitCode).toBe(0);
+    expect((await myd(null, "resolve", file, "c1")).exitCode).toBe(0);
+    const body = fs.readFileSync(file, "utf8");
+    expect(body).toContain("Intro.\n\nA brand new paragraph.\n\nFix {==this==}{>>reword<<}{#c1} sentence, reworded.\n\nOutro.");
   });
 
   test("stale block edits leave bytes unchanged and guarded edits succeed", async () => {
