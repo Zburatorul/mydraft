@@ -345,7 +345,13 @@ export function startServer(port = 7474, options: { publicUrl?: string | null } 
       }
     },
     websocket: {
-      open(ws) { if (ws.data.inbox) { inboxSockets.add(ws); return; } const set = topics.get(ws.data.path) ?? new Set(); set.add(ws); topics.set(ws.data.path, set); if (fs.existsSync(ws.data.path)) ensureWatch(ws.data.path); },
+      open(ws) { if (ws.data.inbox) { inboxSockets.add(ws); return; } const set = topics.get(ws.data.path) ?? new Set(); set.add(ws); topics.set(ws.data.path, set);
+        if (!fs.existsSync(ws.data.path)) return;
+        ensureWatch(ws.data.path);
+        // A change between the page's first load and this socket opening (or during a reconnect gap) was
+        // broadcast to nobody; the current version lets the page notice and reload instead of going stale.
+        try { ws.send(JSON.stringify({ type: "hello", version: readDoc(ws.data.path).version })); } catch {}
+      },
       close(ws) { if (ws.data.inbox) { inboxSockets.delete(ws); return; } topics.get(ws.data.path)?.delete(ws); },
       message(ws, msg) { if (String(msg) === "ping") ws.send("pong"); },
     },
