@@ -663,10 +663,12 @@ function connect() {
   ws.onmessage = (e) => {
     if (e.data === "pong") return;
     const m = JSON.parse(e.data);
+    // hello: the socket is live; reload if the document changed while it was not (first open or a reconnect)
+    if (m.type === "hello") { document.documentElement.dataset.live = "open"; if (state.version && m.version !== state.version) load(); }
     if (m.type === "changed") load();
     if (m.type === "done" || m.type === "tracking-changed") checkTracking();
   };
-  ws.onclose = () => setTimeout(connect, 1000);
+  ws.onclose = () => { delete document.documentElement.dataset.live; setTimeout(connect, 1000); };
   setInterval(() => { try { ws.send("ping"); } catch {} }, 20000);
 }
 const trackingTimer = setInterval(checkTracking, 15000);
