@@ -15,7 +15,12 @@ export class DocumentVersionConflict extends Error {
 }
 
 export type DocumentMutationResult = {
+  /** The document as it was read, before the transform. */
+  previous: Doc;
+  /** The transformed document: what is now on disk, or what would be under dryRun. */
   document: Doc;
+  /** True when nothing was written (dryRun); version is then the would-be version, not the file's. */
+  dryRun: boolean;
   previousVersion: string;
   version: string;
 };
@@ -23,7 +28,9 @@ export type DocumentMutationResult = {
 export function mutateDocument(
   file: string,
   transform: (document: Doc) => string,
-  options: { expectedVersion?: string } = {},
+  // dryRun runs the identical read → version check → transform → reparse path and stops short of
+  // the write, so a preview can never accept an edit that the real write would reject (issue #27).
+  options: { expectedVersion?: string; dryRun?: boolean } = {},
 ): DocumentMutationResult {
   const canonicalFile = path.resolve(file);
   const source = fs.readFileSync(canonicalFile, "utf8");
@@ -35,9 +42,8 @@ export function mutateDocument(
 
   const nextSource = transform(current);
   const next = loadDoc(canonicalFile, nextSource);
-  if (nextSource === source) {
-    return { document: next, previousVersion: current.version, version: next.version };
-  }
+  const result = { previous: current, document: next, dryRun: !!options.dryRun, previousVersion: current.version, version: next.version };
+  if (nextSource === source || options.dryRun) return result;
 
   const mode = fs.statSync(canonicalFile).mode & 0o7777;
   const temporary = path.join(
@@ -52,5 +58,5 @@ export function mutateDocument(
     if (fs.existsSync(temporary)) fs.rmSync(temporary);
   }
 
-  return { document: next, previousVersion: current.version, version: next.version };
+  return result;
 }

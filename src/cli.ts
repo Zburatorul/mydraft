@@ -5,7 +5,8 @@ import fs from "node:fs";
 import { spawn, execFileSync } from "node:child_process";
 import { STATE_FILE } from "./server.ts";
 import { loadDoc, reply as replyDoc, resolve as resolveDoc } from "./doc.ts";
-import { DocumentVersionConflict, mutateDocument } from "./document-mutation.ts";
+import { DocumentVersionConflict, mutateDocument, type DocumentMutationResult } from "./document-mutation.ts";
+import { unifiedDiff } from "./revision-diff.ts";
 import { topBlocks } from "./render.ts";
 import { getSemanticObject, listSemanticObjects, replaceSemanticObject } from "./semantic-objects.ts";
 import { InvalidPublicOrigin, normalizePublicOrigin, reviewUrl } from "./public-url.ts";
@@ -170,6 +171,21 @@ function blocksOf(file: string) {
   return { doc, blocks: topBlocks(doc) };
 }
 
+// Issue #27: what `--dry-run` prints instead of writing. `result` came through the same mutateDocument
+// read/version/transform/reparse path as a real write, so every refusal has already happened by here.
+// `shiftFrom` is the first positional index whose id moves when the edit changes the block count:
+// the block after the target, or the target itself for insert --before.
+const DRY_RUN = !!flags["dry-run"];
+function dryRunReport(file: string, result: DocumentMutationResult, target: Record<string, string>, region: { before: string; after: string }, shiftFrom?: number) {
+  const before = topBlocks(result.previous), after = topBlocks(result.document), by = after.length - before.length;
+  const shift = shiftFrom !== undefined && by && shiftFrom < before.length ? { from: `b${shiftFrom}`, by } : null;
+  const diff = unifiedDiff(result.previous.source, result.document.source, { from: file, to: `${file} (dry-run)` });
+  if (JSON_OUT) return out({ ok: true, dryRun: true, ...target, version: result.previousVersion, before: region.before, after: region.after, diff, blocks: after.map(({ id, name, type, guard }) => ({ id, name, type, guard })), shift });
+  if (by) console.error(`warning: ${cmd === "insert" ? `this insert adds ${by} block${by === 1 ? "" : "s"}` : `this edit turns 1 block into ${1 + by}`}${shift ? `; positional ids ${shift.from}..b${before.length - 1} shift by ${by > 0 ? "+" : ""}${by}` : ""} (named ids and other blocks' content guards do not change)`);
+  process.stdout.write(diff);
+  console.log("dry-run: no changes written");
+}
+
 // `myd <cmd> --help` and `myd help <cmd>` render the same page; the flag is checked before the
 // switch so it never reaches a command that would demand arguments first.
 if (flags.help && cmd && cmd !== "help") {
@@ -187,7 +203,9 @@ switch (cmd) {
   }
   case "install-prompt": {
     const block = fs.readFileSync(path.join(ROOT, "docs/prompt.md"), "utf8").trim();
-    const BEGIN = "<!-- myd:begin (managed by `myd install-prompt`; edit ~/LocalDev/mydraft/docs/prompt.md instead) -->", END = "<!-- myd:end -->";
+    // The marker names this checkout, wherever it lives; the match accepts any marker text so a
+    // block installed from another checkout (or an older release) is replaced, not duplicated.
+    const BEGIN = `<!-- myd:begin (managed by \`myd install-prompt\`; edit ${path.join(ROOT, "docs/prompt.md")} instead) -->`, END = "<!-- myd:end -->";
     const home = require("node:os").homedir();
     const targets: string[] = [];
     if (flags.file) targets.push(path.resolve(String(flags.file)));
@@ -196,7 +214,7 @@ switch (cmd) {
     for (const t of targets) {
       fs.mkdirSync(path.dirname(t), { recursive: true });
       const cur = fs.existsSync(t) ? fs.readFileSync(t, "utf8") : "";
-      const re = new RegExp(`\\n?${BEGIN.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${END.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n?`);
+      const re = /\n?<!-- myd:begin\b[^\n]*?-->[\s\S]*?<!-- myd:end -->\n?/;
       const had = re.test(cur);
       let next = cur.replace(re, "\n");
       // also strip a legacy unmanaged block (Roughdraft's, or an earlier hand-written myd block) that starts with a known heading
@@ -219,7 +237,33 @@ switch (cmd) {
       if (exists) fs.rmSync(t, { recursive: true, force: true });
       fs.symlinkSync(skillSrc, t); results.push({ file: t, action: "linked" });
     }
-    out(results, results.map((r) => `${r.action.padEnd(9)} ${r.file}`).join("\n")); break;
+    // launcher: <bin-dir>/myd → this checkout's cli.ts, so `myd` works wherever the repo lives.
+    // Only a symlink into a mydraft checkout (…/src/cli.ts) counts as ours; anything else is left alone.
+    // A scoped --remove (--claude/--codex) keeps it, since the other agent may still use it.
+    const cliSrc = path.join(ROOT, "src/cli.ts");
+    const binDir = path.resolve(typeof flags["bin-dir"] === "string" ? flags["bin-dir"] : path.join(home, ".local/bin"));
+    const launcher = path.join(binDir, "myd");
+    const warn = (m: string) => { console.error(`Warning: ${m}`); return m; };
+    if (!flags.file && !(flags.remove && (flags.claude || flags.codex))) {
+      let link: string | null = null, present = false;
+      try { const st = fs.lstatSync(launcher); present = true; if (st.isSymbolicLink()) link = path.resolve(binDir, fs.readlinkSync(launcher)); } catch {}
+      let points = false; try { points = link !== null && fs.realpathSync(link) === fs.realpathSync(cliSrc); } catch {}
+      const owned = link !== null && (points || link.endsWith(path.join(path.sep, "src", "cli.ts")));
+      if (flags.remove) {
+        if (points) fs.rmSync(launcher);
+        results.push({ file: launcher, action: points ? "removed" : present ? "kept" : "absent", ...(present && !points ? { warning: warn(`${launcher} does not point to ${cliSrc}; left in place`) } : {}) });
+      } else if (points) results.push({ file: launcher, action: "unchanged" });
+      else if (present && !owned) results.push({ file: launcher, action: "skipped", warning: warn(`${launcher} exists and is not a myd symlink; left in place (remove it, or pass --bin-dir DIR)`) });
+      else {
+        try { const mode = fs.statSync(cliSrc).mode; if (!(mode & 0o111)) fs.chmodSync(cliSrc, mode | 0o755); } catch {}
+        fs.mkdirSync(binDir, { recursive: true });
+        if (present) fs.rmSync(launcher);
+        fs.symlinkSync(cliSrc, launcher); results.push({ file: launcher, action: present ? "relinked" : "linked" });
+      }
+      const onPath = (process.env.PATH ?? "").split(path.delimiter).some((d) => d && path.resolve(d) === binDir);
+      if (!flags.remove && results.at(-1).action !== "skipped" && !onPath) results.at(-1).warning = warn(`${binDir} is not on PATH; add it (e.g. export PATH="${binDir}:$PATH") so \`myd\` resolves`);
+    }
+    out(results, [`myd checkout ${ROOT}`, ...results.map((r) => `${r.action.padEnd(9)} ${r.file}`)].join("\n")); break;
   }
   case "guide": {
     const g = fs.readFileSync(path.join(ROOT, "docs/agent-guide.md"), "utf8");
@@ -304,9 +348,24 @@ switch (cmd) {
       const snippet = doc.clean.slice(from, to).replace(/\s+/g, " ").trim();
       return `${from > blockStart ? "…" : ""}${snippet}${to < blockEnd ? "…" : ""}`;
     };
+    // stable anchor (#29): the block's current id, authored name and content guard (pass it straight to --target-guard), the quoted
+    // text and which of its identical occurrences in the clean text this is; line is only a hint. Replies and document-level notes: null.
+    const occurrence = (quote: string, at: number) => { let n = 0; for (let i = doc.clean.indexOf(quote); i >= 0 && i < at; i = doc.clean.indexOf(quote, i + 1)) n++; return n; };
+    const anchorFor = (item: typeof items[number], note: boolean) => {
+      if (item.parentId || note) return null;
+      // inline markup lives inside its block; an object comment sits on its own line right after the block it anchors, so the body
+      // offset finds it even when the endmatter `anchor.block` is a positional id recorded before later edits shifted the blocks
+      const block = blocks.find((b) => item.offset >= b.start && item.endOffset <= b.end) ?? blocks.filter((b) => b.end <= item.offset).at(-1);
+      const inline = item.anchorText || item.originalText || (item.cleanEndOffset > item.cleanOffset ? doc.clean.slice(item.cleanOffset, item.cleanEndOffset) : "");
+      const quote = inline || item.anchor?.quote || null;
+      // a suggestion's text starts at cleanOffset; a comment's {==highlight==} ends where its {>>…<<} begins
+      const at = !quote ? -1 : !inline ? doc.clean.indexOf(quote, block ? doc.origToClean(block.start) : 0) : doc.clean.startsWith(quote, item.cleanOffset) ? item.cleanOffset : doc.clean.lastIndexOf(quote, item.cleanOffset - quote.length);
+      return { block: block?.id ?? null, name: block?.name ?? null, guard: block?.guard ?? null, ...(item.anchor?.target ? { target: item.anchor.target } : {}), quote, quoteOccurrence: quote && at >= 0 ? occurrence(quote, at) : null, lineApprox: item.line };
+    };
     // document-level notes (Done Reviewing notes): a comment with no anchor text, no object anchor, no parent
-    const slim = items.map(({ id, kind, suggestionKind, parentId, author, text, anchorText, originalText, replacementText, status, line, anchor }, index) => ({ id, kind: kind === "comment" && !anchorText && !anchor && !parentId ? "note" as const : kind, suggestionKind, parentId, author, status, line, anchorText, originalText, replacementText, anchor, context: contextFor(items[index]!), text }));
-    out({ path: file, version: doc.version, items: slim }, slim.map((i) => `${i.id} [${i.kind === "note" ? "note — document-level, from Done Reviewing" : i.kind}${i.parentId ? `→${i.parentId}` : ""}] ${i.author ?? "?"} L${i.line}${i.anchorText ? ` “${i.anchorText.slice(0, 60)}”` : ""}${i.anchor ? ` @${i.anchor.block}${i.anchor.target ? "›" + i.anchor.target : ""}` : ""}\n    ${i.kind === "suggestion" ? `${i.originalText} → ${i.replacementText}  ` : ""}${i.text}${i.context ? `\n    context: ${i.context}` : ""}`).join("\n") + (slim.length ? `\n\nNext: myd reply ${JSON.stringify(file)} <id> "…" (questions for the user go here too) · myd blocks ${JSON.stringify(file)} --json to get the version and positional guard before myd set-block/insert · myd resolve <id> · then hand back: myd view ${JSON.stringify(file)}` : "") || "no pending items");
+    const slim = items.map(({ id, kind, suggestionKind, parentId, author, text, anchorText, originalText, replacementText, status, line, anchor }, index) => { const note = kind === "comment" && !anchorText && !anchor && !parentId; return { id, kind: note ? "note" as const : kind, suggestionKind, parentId, author, status, line, anchorText, originalText, replacementText, anchor: anchorFor(items[index]!, note), context: contextFor(items[index]!), text }; });
+    const where = (a: NonNullable<typeof slim[number]["anchor"]>) => `@${a.block ?? "?"}${a.target ? "›" + a.target : ""} (${a.guard ? `guard ${a.guard}, ` : ""}~L${a.lineApprox})${a.quote ? ` “${a.quote.slice(0, 60)}${a.quote.length > 60 ? "…" : ""}”` : ""}`;
+    out({ path: file, version: doc.version, items: slim }, slim.map((i) => `${i.id} [${i.kind === "note" ? "note — document-level, from Done Reviewing" : i.kind}${i.parentId ? `→${i.parentId}` : ""}] ${i.author ?? "?"} ${i.anchor ? where(i.anchor) : `L${i.line}`}\n    ${i.kind === "suggestion" ? `${i.originalText} → ${i.replacementText}  ` : ""}${i.text}${i.context ? `\n    context: ${i.context}` : ""}`).join("\n") + (slim.length ? `\n\nNext: myd reply ${JSON.stringify(file)} <id> "…" (questions for the user go here too) · edit the commented block by the guard printed above: myd set-block ${JSON.stringify(file)} --target-guard <guard> --file new.md (no block id, no re-listing) · myd resolve <id> · then hand back: myd view ${JSON.stringify(file)}` : "") || "no pending items");
     break;
   }
   case "reply": {
@@ -342,31 +401,43 @@ switch (cmd) {
     if (!flags.version) die("set-object requires --version from myd objects --json");
     const replacement = flags.file ? fs.readFileSync(String(flags.file), "utf8") : await Bun.stdin.text();
     try {
-      const result = mutateDocument(file, (doc) => replaceSemanticObject(doc, pos[1] ?? "", replacement), { expectedVersion: String(flags.version) });
+      const result = mutateDocument(file, (doc) => replaceSemanticObject(doc, pos[1] ?? "", replacement), { expectedVersion: String(flags.version), dryRun: DRY_RUN });
+      if (DRY_RUN) { dryRunReport(file, result, { ref: pos[1]! }, { before: getSemanticObject(result.previous, pos[1]!)?.source ?? "", after: getSemanticObject(result.document, pos[1]!)?.source ?? "" }); break; }
       out({ ok: true, ref: pos[1], previousVersion: result.previousVersion, version: result.version }, `set-object ${pos[1]} ok`);
     } catch (error) { mutationError(error); }
     break;
   }
   case "set-block": case "insert": {
     const file = abs(pos[0]);
-    if (!flags.version) die(`${cmd} requires --version from myd blocks --json`);
+    // A content guard (--expect / --target-guard) names the block the caller planned to edit, so it is
+    // itself the concurrency check for that region: --version becomes optional and a batch planned from
+    // one listing can apply in any order. Without one, only an authored name is stable enough to target.
+    const expected = flags.expect ? String(flags.expect) : undefined, targetGuard = flags["target-guard"] ? String(flags["target-guard"]) : undefined;
+    const target = pos[1] && pos[1] !== "-" ? pos[1] : undefined;
+    if (!target && !targetGuard) die(`${cmd} requires a block id or --target-guard <guard> from myd blocks --json`);
+    if (!flags.version && !expected && !targetGuard) die(`${cmd} requires --version from myd blocks --json, or a content guard (--expect / --target-guard) from that listing`);
     const content = (flags.file ? fs.readFileSync(String(flags.file), "utf8") : await Bun.stdin.text()).replace(/\s+$/, "");
-    let positional = false;
+    let resolved = target ?? "", region = { before: "", after: "" }, shiftFrom = 0;
     try {
       const result = mutateDocument(file, (doc) => {
         const blocks = topBlocks(doc);
-        const b = blocks.find((x) => x.id === pos[1] || `b${x.index}` === pos[1]);
-        if (!b) throw new Error(`no block ${pos[1]}`);
-        positional = !b.name;
-        if (positional && !flags.expect) throw new Error(`positional block ${pos[1]} requires --expect <guard> from myd blocks --json; re-list blocks after every mutation`);
-        if (positional && flags.expect !== b.guard) throw new Error(`positional block ${pos[1]} no longer matches --expect; re-list blocks before editing again`);
-        let body: string;
-        if (cmd === "set-block") body = doc.body.slice(0, b.start) + content + doc.body.slice(b.end);
-        else if (flags.before) body = doc.body.slice(0, b.start) + content + "\n\n" + doc.body.slice(b.start);
-        else body = doc.body.slice(0, b.end) + "\n\n" + content + doc.body.slice(b.end);
-        return body + doc.endmatter.raw;
-      }, { expectedVersion: String(flags.version) });
-      out({ ok: true, block: pos[1], previousVersion: result.previousVersion, version: result.version, relistRequired: positional }, `${cmd} ${pos[1]} ok${positional ? "; re-list blocks before another positional edit" : ""}`);
+        const guard = targetGuard ?? expected;
+        const holder = guard ? blocks.find((x) => x.guard === guard) : undefined;
+        const b = target ? blocks.find((x) => x.id === target || `b${x.index}` === target) : holder;
+        if (!b) throw new Error(target ? `no block ${target}` : `no block carries guard ${guard}; the planned block was edited or removed — re-read it with myd blocks --json`);
+        if (target && !b.name && !guard) throw new Error(`positional block ${target} requires --expect <guard> from myd blocks --json (or address it with --target-guard)`);
+        if (guard && b.guard !== guard) {
+          if (holder) throw new Error(`guard ${guard} is now at ${holder.id}; refusing to edit ${target} (the block you planned has moved — use --target-guard ${guard}, or ${holder.id})`);
+          throw new Error(`${target} no longer matches --expect ${guard}, and no block carries that guard; the planned block was edited or removed — re-read it with myd blocks --json`);
+        }
+        resolved = b.id;
+        const old = doc.body.slice(b.start, b.end);
+        shiftFrom = cmd === "insert" && flags.before ? b.index : b.index + 1;
+        region = { before: old, after: cmd === "set-block" ? content : flags.before ? content + "\n\n" + old : old + "\n\n" + content };
+        return doc.body.slice(0, b.start) + region.after + doc.body.slice(b.end) + doc.endmatter.raw;
+      }, { ...(flags.version ? { expectedVersion: String(flags.version) } : {}), dryRun: DRY_RUN });
+      if (DRY_RUN) { dryRunReport(file, result, { block: resolved }, region, shiftFrom); break; }
+      out({ ok: true, block: resolved, previousVersion: result.previousVersion, version: result.version, relistRequired: false }, `${cmd} ${resolved} ok; other blocks keep their guards, positional ids may have shifted`);
     } catch (error) { mutationError(error); }
     break;
   }

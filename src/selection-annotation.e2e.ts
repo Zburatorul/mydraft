@@ -19,6 +19,7 @@ let browser: Browser;
 let server: ReturnType<typeof Bun.spawn>;
 let baseUrl: string;
 let tempDir: string;
+let serverOutput = "";
 
 async function startIsolatedServer() {
   server = Bun.spawn([process.execPath, path.join(ROOT, "src/server.ts")], {
@@ -41,6 +42,13 @@ async function startIsolatedServer() {
   }
   const port = /localhost:(\d+)/.exec(output)?.[1];
   if (!port) throw new Error(`Could not read myd server port from: ${output}`);
+  // Keep draining both pipes for the server's lifetime: an unread pipe that fills blocks the server's
+  // next write, and whatever it says is printed after the suite for a failing CI run to show.
+  const drain = async (stream: ReadableStream<Uint8Array>, reader = stream.getReader()) => {
+    for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) serverOutput += new TextDecoder().decode(chunk.value);
+  };
+  void drain(server.stdout, reader).catch(() => {});
+  if (server.stderr instanceof ReadableStream) void drain(server.stderr).catch(() => {});
   baseUrl = `http://localhost:${port}`;
 }
 
@@ -59,6 +67,8 @@ async function trackedPage(name: string, source = SOURCE, viewport?: { width: nu
   await page.goto(`${baseUrl}/review/${encodeURIComponent(tracked.reviewId)}`);
   expect(page.url()).not.toContain(encodeURIComponent(fixture));
   await page.locator("#doc > *").first().waitFor();
+  // Live-refresh tests mutate the file next; until the socket is open that change reaches no one.
+  await page.locator("html[data-live=open]").waitFor({ state: "attached" });
   return { fixture, page };
 }
 
@@ -113,6 +123,7 @@ beforeAll(async () => {
 }, E2E_TIMEOUT_MS);
 
 afterAll(async () => {
+  if (serverOutput.trim()) console.error(`myd server output:\n${serverOutput}`);
   await browser?.close();
   server?.kill();
   if (server) await server.exited;
@@ -321,6 +332,25 @@ describe("cross-element annotation in a real browser", () => {
     await page.waitForFunction((input) => !input.isConnected, inputBeforeReply);
     await replySaved;
     expect(await reply.inputValue()).toBe("");
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
+  test("a change made before the live socket opens is still shown", async () => {
+    const fixture = path.join(tempDir, "late-socket.md");
+    fs.writeFileSync(fixture, SOURCE);
+    const tracked = await (await fetch(`${baseUrl}/api/reviews`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: fixture }) })).json() as { reviewId: string };
+    const page = await browser.newPage();
+    let release!: () => void;
+    const opened = new Promise<void>((resolve) => { release = resolve; });
+    await page.routeWebSocket(/\/ws\?/, async (ws) => { await opened; ws.connectToServer(); });
+    await page.goto(`${baseUrl}/review/${encodeURIComponent(tracked.reviewId)}`);
+    await page.locator("#doc > *").first().waitFor();
+
+    // The watcher broadcasts this to no one: the page's socket is still being held back.
+    fs.appendFileSync(fixture, "\nWritten while the socket was connecting.\n");
+    await Bun.sleep(400);
+    release();
+    await page.locator("#doc", { hasText: "Written while the socket was connecting." }).waitFor();
     await page.close();
   }, E2E_TIMEOUT_MS);
 

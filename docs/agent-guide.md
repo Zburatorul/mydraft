@@ -30,11 +30,24 @@ myd view /abs/doc.md --from-review ID # hand a clean revision back with review-r
 Reading `myd comments` output:
 
 ```
-c6 [comment] user L28 @b7               ← object comment on block b7 (whole block)
-c5 [comment] user L14 @flow›node:Viewer ← object comment on Mermaid node "Viewer" in block {#flow}
-s1 [suggestion] user L40                ← originalText → replacementText, then optional note
-c2 [reply→s1] user L54                  ← thread reply
-c10 [comment] user L54                  ← document-level comment (the Done note)
+c3 [comment] user @b7 (guard 3e3561b3efaf, ~L38) “quoted text”  ← inline comment in block b7
+c6 [comment] user @b7 (guard 3e3561b3efaf, ~L28)                 ← object comment on block b7 (whole block)
+c5 [comment] user @flow›node:Viewer (guard 8fda4aa75bf8, ~L14)   ← object comment on Mermaid node "Viewer" in block {#flow}
+s1 [suggestion] user @costs (guard 1b2c3d4e5f60, ~L40) “ten”     ← originalText → replacementText, then optional note
+c2 [reply→s1] user L54                                           ← thread reply (no anchor of its own)
+c10 [note — document-level, from Done Reviewing] user L54         ← the Done note (no anchor)
+```
+
+`@` is the block's authored name or its *current* positional id; the `guard` is that block's content guard, the same value `myd blocks --json` prints, and `~L` is only a hint. In `--json` each item carries
+`anchor: {block, name, guard, target?, quote, quoteOccurrence, lineApprox}` — `name` is `null` for an unnamed block, `target` is the object inside the block (object comments only), `quote` the anchored text and `quoteOccurrence` the 0-based index of that exact text among its identical occurrences in the marker-free document. Replies and document-level notes have `anchor: null`; the old top-level `line` stays for compatibility.
+
+**Comment → edit round trip, no positional ids:**
+
+```bash
+myd comments doc.md --json                               # c3 … "anchor": {"block": "b7", "guard": "3e3561b3efaf", …}
+myd set-block doc.md --target-guard 3e3561b3efaf --file new.md   # hits the commented block even if earlier edits moved it
+myd reply doc.md c3 "Reworded as asked."
+myd resolve doc.md c3
 ```
 
 ## blocks — addressing and editing by block
@@ -56,13 +69,21 @@ graph LR; A-->B
 ```
 EOF
 myd insert doc.md results --before --version <v> <<'EOF' … EOF   # insert before/after a block; obtain <v> from `myd blocks --json`
-myd set-block doc.md b17 --version <v> --expect <guard> <<'EOF' … EOF  # positional id: guard is mandatory
+myd set-block doc.md b17 --expect <guard> <<'EOF' … EOF  # positional id: guard is mandatory
 ```
 
 Positional ids shift when blocks are added; name anything you expect to revisit or that the user might comment on.
 
+Before a multi-block edit (a replacement that splits one block into several, or an insert), run it once with `--dry-run`: same validation as the real write, prints the unified diff and which positional ids would shift, writes nothing (`--json` adds the resulting block list with guards).
+
 > [!IMPORTANT]
-> **Re-list after every mutation before using another positional `bN` id.** A positional edit requires both the current document `--version` and that listing's per-block `--expect <guard>`. Any mutation invalidates all positional guards, so pairing a newly returned version with an old `bN` fails instead of editing shifted content. Authored names do not require `--expect` because their identity is stable.
+> **Plan once, address by guard.** A block's `guard` is a hash of its own source, so it names the block you planned to edit wherever it has moved. For a batch — even on a document with no authored names — take one `myd blocks --json` listing and apply every edit with `--target-guard <guard>` from *that* listing; no `--version`, no re-listing, any order. `bN --expect <guard>` also works, and fails with the block's new position if an earlier edit shifted it. **Never refresh a guard just before writing**: a guard read after the fact names whatever now occupies the position, which is exactly the wrong-block bug. A guard expires only when its own block changes; replies and resolutions do not touch it.
+
+```bash
+myd blocks doc.md --json > plan.json          # one listing for the whole batch
+myd set-block doc.md --target-guard 3e3561b3efaf --file new/costs.md
+myd set-block doc.md --target-guard 8fda4aa75bf8 --file new/why.md   # order does not matter
+```
 
 ## objects — what can be commented on (the annotation inventory)
 

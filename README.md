@@ -8,6 +8,16 @@ Small tools that make Roughdraft (`npm i -g roughdraft`) usable for human–agen
 | `bin/rd-shot FILE.md [OUT.png]` | Screenshot the rendered doc (headless Playwright, uses roughdraft's bundled browser). |
 | `bin/rd-diff OLD.md NEW.md [OUT.md]` | CriticMarkup diff between two versions, viewable in Roughdraft. |
 
+## Install
+
+`myd` is a TypeScript CLI that runs directly on [Bun](https://bun.sh) (≥ 1.x; no build step). Clone the repo anywhere, then from the checkout:
+
+```bash
+bun install && bun src/cli.ts install-prompt
+```
+
+That links `~/.local/bin/myd` → `<checkout>/src/cli.ts` (`--bin-dir DIR` to put it elsewhere; it warns if the directory is not on `PATH` and never overwrites a `myd` it did not create), symlinks `skill/` into the agents' skills directories, and installs the prompt block. Nothing depends on where the checkout lives; after moving it, run `install-prompt` again from the new location. `myd install-prompt --remove` undoes all of it.
+
 Rich documents can also use an `explainer` fence for native, responsive timing/measurement/result layouts. Authored object IDs become precise annotation targets. Agents can inventory and surgically revise those same `block›target` objects with `myd objects`, `myd object`, and `myd set-object`; the full fence is validated before a guarded write. Sandboxed `html` fences remain available for one-off visual work; elements marked with `data-myd-id="…"` can report their identity and selected text through myd's narrow annotation bridge.
 
 ## Publish an immutable release
@@ -42,4 +52,4 @@ Remote review is a property of the deployment, so `myd serve --public-url` recor
 
 Env: `MYD_PORT`, `MYD_HOME` (state dir) run an isolated instance; `MYD_PUBLIC_URL` enables remote review; `MYD_NO_OPEN=1` suppresses the browser (a browser that cannot be launched is a warning, not a failure — the review is still created and `--json` reports `browserOpened`/`browserError`) — the eval runner uses all three (`:7575`, `~/tmp/myd-eval/.myd-home`).
 
-Agent integration (three rungs, all installed idempotently by `myd install-prompt`): `docs/prompt.md` → ~100-word always-loaded pointer in `~/.claude/CLAUDE.md` + `~/.codex/AGENTS.md` (marker-delimited); `skill/` → symlinked to `~/.claude/skills/myd` + `~/.codex/skills/myd` (SKILL.md workflow, references/agent-guide.md); `myd help` (command index), `myd help <command>` / `myd <command> --help` (flags, guards, one example), and `myd guide <topic>` (concepts) from the CLI. `--remove` uninstalls all; `--file F` targets any other agent file.
+Agent integration (three rungs, all installed idempotently by `myd install-prompt`): `docs/prompt.md` → ~100-word always-loaded pointer in `~/.claude/CLAUDE.md` + `~/.codex/AGENTS.md` (marker-delimited); `skill/` → symlinked to `~/.claude/skills/myd` + `~/.codex/skills/myd` (SKILL.md workflow, references/agent-guide.md); `myd help` (command index), `myd help <command>` / `myd <command> --help` (flags, guards, one example), and `myd guide <topic>` (concepts) from the CLI. It also links the `myd` launcher (`~/.local/bin/myd`, see Install). `--remove` uninstalls all; `--file F` targets any other agent file.
