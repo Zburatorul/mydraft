@@ -22,10 +22,11 @@ export type CommandHelp = {
 };
 
 const JSON_FLAG: [string, string] = ["--json", "machine-readable output"];
+const DRY_RUN_FLAG: [string, string] = ["--dry-run", "run every check a real write runs (same errors, exit codes); print the unified diff and any positional-id shift; write nothing"];
 const GUARD_RULES = [
-  "--version is the document version from `myd blocks --json`; a stale one fails with exit 3 and writes nothing.",
-  "A named block (`## Results {#results}`) needs only --version. A positional id (`b3`) also needs --expect <guard>, because positions shift.",
-  "Every mutation advances the version and rewrites guards, so re-list blocks before the next positional edit.",
+  "A guard is a hash of the block's own source: it names *what* you planned to edit, not where it sits. Edits elsewhere, replies and resolutions leave it unchanged.",
+  "A positional id (`b3`) needs --expect <guard>; if that content has moved, the write fails and names its new position. --target-guard G addresses the block by content alone, with no id.",
+  "With a guard, --version is optional, so a batch planned from one listing applies in any order. A named block (`## Results {#results}`) without a guard needs --version. A supplied --version is always enforced (stale: exit 3, nothing written).",
 ];
 
 export const COMMANDS: Record<string, CommandHelp> = {
@@ -96,8 +97,13 @@ export const COMMANDS: Record<string, CommandHelp> = {
         "An item marked `note` is document-level, produced by Done Reviewing. It has no anchor and is neither replyable nor resolvable, so it reappears on every call until the document changes.",
         "A question for the user belongs in `myd reply`, not in chat; then hand the document back with `myd view`.",
       ]],
+      ["Anchor", [
+        "Each item prints `@<name-or-bN>[›target] (guard G, ~L<line>) “quote”`: the block it sits in now, that block's content guard, and an approximate line.",
+        "With --json: `anchor: {block, name, guard, target?, quote, quoteOccurrence, lineApprox}`; `quoteOccurrence` is the 0-based index among identical occurrences of the quote. Replies and notes have `anchor: null`.",
+        "Round trip with no positional ids: take `anchor.guard` → `myd set-block FILE --target-guard G --file new.md` → `myd reply` → `myd resolve`. The guard survives edits to other blocks, replies and resolutions.",
+      ]],
     ],
-    example: ["myd comments plans/roadmap.md --json"],
+    example: ["myd comments plans/roadmap.md --json", "myd set-block plans/roadmap.md --target-guard 3e3561b3efaf --file new.md"],
     seeAlso: ["myd reply", "myd resolve", "myd guide workflow"],
   },
   reply: {
@@ -164,7 +170,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
       "`--json` additionally carries the document version.",
     args: [["<file.md>", "the document to inspect"]],
     flags: [JSON_FLAG],
-    sections: [["Versioning", ["Guards change on every mutation — re-run this between guarded edits rather than reusing an earlier listing."]]],
+    sections: [["Versioning", ["Guards hash each block's source, so one listing stays valid for a whole batch: a guard only expires when its own block is edited."]]],
     example: ["myd blocks plans/roadmap.md --json"],
     seeAlso: ["myd block", "myd set-block", "myd guide blocks"],
   },
@@ -180,34 +186,38 @@ export const COMMANDS: Record<string, CommandHelp> = {
   },
   "set-block": {
     group: "source",
-    syntax: "<file.md> <block-id> --version V [--expect G] [--file F]",
+    syntax: "<file.md> (<block-id> [--expect G] | --target-guard G) [--version V] [--file F] [--dry-run]",
     summary: "replace one block's source (guarded)",
     detail: "Reads the replacement from --file, or from stdin when --file is omitted. Trailing whitespace is stripped.",
     args: [["<file.md>", "the document"], ["<block-id>", "named id (`results`) or positional id (`b3`) from `myd blocks`"]],
     flags: [
-      ["--version V", "required; document version from `myd blocks --json`"],
-      ["--expect G", "required for positional ids; that block's guard from `myd blocks --json`"],
+      ["--version V", "document version from `myd blocks --json`; required unless a guard is given"],
+      ["--expect G", "required for positional ids; that block's guard from your planning listing"],
+      ["--target-guard G", "address the block by its guard instead of an id"],
       ["--file F", "read the replacement from F instead of stdin"],
+      DRY_RUN_FLAG,
       JSON_FLAG,
     ],
     sections: [["Versioning and guards", GUARD_RULES]],
     example: [
-      "myd blocks plans/roadmap.md --json                       # read version and guard",
-      'echo "Rewritten." | myd set-block plans/roadmap.md results --version 7 --json',
+      "myd blocks plans/roadmap.md --json                       # plan once: read guards",
+      'echo "Rewritten." | myd set-block plans/roadmap.md --target-guard 3e3561b3efaf --json',
     ],
     seeAlso: ["myd blocks", "myd insert", "myd guide blocks"],
   },
   insert: {
     group: "source",
-    syntax: "<file.md> <block-id> --version V [--expect G] [--before] [--file F]",
+    syntax: "<file.md> (<block-id> [--expect G] | --target-guard G) [--version V] [--before] [--file F] [--dry-run]",
     summary: "insert new content after (or before) a block (guarded)",
     detail: "Reads the new content from --file, or from stdin when --file is omitted. Same guard rules as set-block.",
     args: [["<file.md>", "the document"], ["<block-id>", "the block to insert relative to"]],
     flags: [
-      ["--version V", "required; document version from `myd blocks --json`"],
-      ["--expect G", "required for positional ids; that block's guard from `myd blocks --json`"],
+      ["--version V", "document version from `myd blocks --json`; required unless a guard is given"],
+      ["--expect G", "required for positional ids; that block's guard from your planning listing"],
+      ["--target-guard G", "address the block by its guard instead of an id"],
       ["--before", "insert before the block instead of after it"],
       ["--file F", "read the new content from F instead of stdin"],
+      DRY_RUN_FLAG,
       JSON_FLAG,
     ],
     sections: [["Versioning and guards", GUARD_RULES]],
@@ -235,7 +245,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
   },
   "set-object": {
     group: "objects",
-    syntax: "<file.md> <block›target> --version V [--file F]",
+    syntax: "<file.md> <block›target> --version V [--file F] [--dry-run]",
     summary: "replace one semantic object with validated YAML (guarded)",
     detail:
       "Reads YAML from --file, or from stdin when --file is omitted. The replacement is schema-validated\n" +
@@ -244,6 +254,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
     flags: [
       ["--version V", "required; document version from `myd objects --json`"],
       ["--file F", "read the replacement YAML from F instead of stdin"],
+      DRY_RUN_FLAG,
       JSON_FLAG,
     ],
     sections: [["Versioning", [
@@ -338,17 +349,21 @@ export const COMMANDS: Record<string, CommandHelp> = {
   },
   "install-prompt": {
     group: "setup",
-    syntax: "[--claude|--codex|--file F] [--remove]",
+    syntax: "[--claude|--codex|--file F] [--bin-dir DIR] [--remove]",
     brief: "",
-    summary: "(re)install the myd block into agent instruction files",
+    summary: "(re)install the myd block, skill and `myd` launcher",
     detail:
-      "Idempotent: it replaces the marker-delimited block rather than appending, and symlinks skill/\n" +
-      "into each agent's skills directory. Defaults to both Claude and Codex targets.",
+      "Idempotent: it replaces the marker-delimited block rather than appending, symlinks skill/\n" +
+      "into each agent's skills directory, and links ~/.local/bin/myd to this checkout's src/cli.ts\n" +
+      "(an existing myd that is not such a symlink is left alone with a warning; a bin dir missing\n" +
+      "from PATH is warned about). Paths come from the checkout it runs from, so run it again after\n" +
+      "moving the repo. Defaults to both Claude and Codex targets.",
     flags: [
       ["--claude", "only ~/.claude/CLAUDE.md and ~/.claude/skills/myd"],
       ["--codex", "only $CODEX_HOME/AGENTS.md and its skills directory"],
-      ["--file F", "target an arbitrary instruction file instead (no skill symlink)"],
-      ["--remove", "uninstall the managed block and the skill symlink"],
+      ["--file F", "target an arbitrary instruction file instead (no skill symlink or launcher)"],
+      ["--bin-dir DIR", "put the myd launcher in DIR instead of ~/.local/bin"],
+      ["--remove", "uninstall the managed block, the skill symlink and (unscoped) our launcher"],
       JSON_FLAG,
     ],
     example: ["myd install-prompt --claude"],
