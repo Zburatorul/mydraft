@@ -24,6 +24,10 @@ myd view /abs/doc.md                 # hand revisions back, nonblocking
 - Use `--wait --timeout N` only when the user explicitly requests synchronous waiting and the runtime can block without polling (maximum 1800 seconds). If the wait yields and would require polling, terminate only the waiter; the detached server and tab remain usable.
 - Edits you make while the viewer is open show up live (file watcher). Prefer block ops (below) to whole-file rewrites: they keep the user's annotations and diff cleanly.
 - After a substantial rewrite of a doc the user already reviewed: `myd diff OLD.md NEW.md` → CriticMarkup diff file they can open with `myd view`.
+- **Live review vs completed review.** While a review is live (the user has not clicked Done), mutate in place with guarded block/object ops and reply to a comment *before* replacing the text it anchors — a rewrite of anchored source is exactly what the thread is about. After Done, the review is history: for a small follow-up keep using guarded ops and `myd view` again (a new review; the completed one stays intact); for a multi-block or structural revision, make a clean revision — `cp doc.md doc.v1.md`, write the new Markdown fresh without CriticMarkup or endmatter, `myd check doc.md`, optionally `myd diff doc.v1.md doc.md doc.diff.md` for the reviewer, then `myd view`. Rewriting a file that still carries markup with an ordinary editor silently orphans its annotations.
+- **Questions only the user can answer:** reply in the thread with the question, hand back with a nonblocking `myd view`, and end the turn. If a claim cannot be verified, ask in-thread or soften/remove it — never invent evidence.
+- **Before handing back:** `myd view` runs a browserless structural check and refuses to open a document that would render broken (exit 2 with `file:line`; `--skip-check` overrides); `myd check FILE [--json]` runs the same check on demand. It is structural only — `myd shot` is the way to see layout, clipping and final pixels.
+- **If myd itself is broken:** `bin/rd-open FILE` (Roughdraft) in the mydraft checkout — `readlink -f "$(command -v myd)"` resolves into it, and the managed block that `myd install-prompt` writes names it.
 - Verify what you rendered: `myd shot /abs/doc.md out.png` (headless Chrome), then look at the PNG.
 
 Reading `myd comments` output:
@@ -108,6 +112,8 @@ Use the smallest rendering form that makes the idea easy to read:
 2. Mermaid for relationships or sequence; Vega-Lite for data-driven charts.
 3. A native `explainer` fence when the reader should see and annotate stable semantic cards, events, or results.
 4. Sandboxed HTML only as an escape hatch for a composition the native forms cannot express.
+
+Do not force content into an explainer type that does not fit; plain Markdown is the default.
 
 The current explainer catalog is deliberately small: `timing`, `measurements`, and `result`. Do not contort unrelated material into these shapes or invent unimplemented types. Add a catalog primitive only after a real document exposes a reusable reading job.
 
