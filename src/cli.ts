@@ -404,6 +404,7 @@ switch (cmd) {
     // A content guard (--expect / --target-guard) names the block the caller planned to edit, so it is
     // itself the concurrency check for that region: --version becomes optional and a batch planned from
     // one listing can apply in any order. Without one, only an authored name is stable enough to target.
+    if (flags.expect === true || flags["target-guard"] === true) die(`${flags.expect === true ? "--expect" : "--target-guard"} needs a guard value from myd blocks --json`);
     const expected = flags.expect ? String(flags.expect) : undefined, targetGuard = flags["target-guard"] ? String(flags["target-guard"]) : undefined;
     const target = pos[1] && pos[1] !== "-" ? pos[1] : undefined;
     if (!target && !targetGuard) die(`${cmd} requires a block id or --target-guard <guard> from myd blocks --json`);
@@ -414,11 +415,15 @@ switch (cmd) {
       const result = mutateDocument(file, (doc) => {
         const blocks = topBlocks(doc);
         const guard = targetGuard ?? expected;
-        const holder = guard ? blocks.find((x) => x.guard === guard) : undefined;
+        const holders = guard ? blocks.filter((x) => x.guard === guard) : [];
+        // identical blocks share a guard: only an id pinned to one exact document version tells them apart
+        if (holders.length > 1 && !(target && flags.version)) throw new Error(`guard ${guard} matches ${holders.length} identical blocks (${holders.map((x) => x.id).join(", ")}); a guard cannot tell them apart — address one by id with --expect and the --version of the listing you took it from`);
+        const holder = holders[0];
         const b = target ? blocks.find((x) => x.id === target || `b${x.index}` === target) : holder;
         if (!b) throw new Error(target ? `no block ${target}` : `no block carries guard ${guard}; the planned block was edited or removed — re-read it with myd blocks --json`);
         if (target && !b.name && !guard) throw new Error(`positional block ${target} requires --expect <guard> from myd blocks --json (or address it with --target-guard)`);
         if (guard && b.guard !== guard) {
+          if (holders.length > 1) throw new Error(`${target} no longer matches --expect ${guard}; re-list blocks before editing again`);
           if (holder) throw new Error(`guard ${guard} is now at ${holder.id}; refusing to edit ${target} (the block you planned has moved — use --target-guard ${guard}, or ${holder.id})`);
           throw new Error(`${target} no longer matches --expect ${guard}, and no block carries that guard; the planned block was edited or removed — re-read it with myd blocks --json`);
         }

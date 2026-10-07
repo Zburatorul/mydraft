@@ -24,7 +24,7 @@ export type CommandHelp = {
 const JSON_FLAG: [string, string] = ["--json", "machine-readable output"];
 const DRY_RUN_FLAG: [string, string] = ["--dry-run", "run every check a real write runs (same errors, exit codes); print the unified diff and any positional-id shift; write nothing"];
 const GUARD_RULES = [
-  "A guard is a hash of the block's own source: it names *what* you planned to edit, not where it sits. Edits elsewhere, replies and resolutions leave it unchanged.",
+  "A guard is a hash of the block's own source: it names *what* you planned to edit, not where it sits. Edits elsewhere, replies and resolutions leave it unchanged. Identical blocks share a guard, so a guard matching several blocks is refused unless you also give the id and --version.",
   "A positional id (`b3`) needs --expect <guard>; if that content has moved, the write fails and names its new position. --target-guard G addresses the block by content alone, with no id.",
   "With a guard, --version is optional, so a batch planned from one listing applies in any order. A named block (`## Results {#results}`) without a guard needs --version. A supplied --version is always enforced (stale: exit 3, nothing written).",
 ];
