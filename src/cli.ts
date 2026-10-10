@@ -158,6 +158,7 @@ async function waitDone(port: number, file: string, timeoutSec: number, reviewId
     let ws: WebSocket | null = null;
     let settled = false;
     let failures = 0;
+    let reconnect: ReturnType<typeof setTimeout> | null = null;
     const onSignal = (signal: NodeJS.Signals) => {
       console.error(`Stopped waiting: received ${signal} before Done Reviewing.`);
       process.exit(signal === "SIGINT" ? 130 : 143);
@@ -168,6 +169,7 @@ async function waitDone(port: number, file: string, timeoutSec: number, reviewId
       if (settled) return;
       settled = true;
       clearInterval(ping); clearInterval(poll); if (t) clearTimeout(t);
+      if (reconnect) clearTimeout(reconnect);
       for (const signal of signals) process.off(signal, onSignal);
       ws?.close();
       res(value);
@@ -208,7 +210,7 @@ async function waitDone(port: number, file: string, timeoutSec: number, reviewId
         const delay = Math.min(30000, 1000 * 2 ** failures);
         if (failures === 0) console.error(`Lost the connection to the myd server on port ${port}; reconnecting (the wait continues).`);
         failures++;
-        setTimeout(connect, delay);
+        reconnect = setTimeout(connect, delay);
       };
     };
     connect();

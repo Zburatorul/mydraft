@@ -43,6 +43,7 @@
     "myd": "bun src/cli.ts",
     "test": "bun test",
     "test:e2e": "status=0; for f in ./src/*.e2e.ts; do bun test \"$f\" --timeout 30000 || status=1; done; exit $status",
+    "test:node": "npm run build && node --test test/node-runtime.mjs",
     "typecheck": "npx tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "prepack": "npm run build"

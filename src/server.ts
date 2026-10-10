@@ -362,30 +362,42 @@ export async function startServer(port = 7474, options: { publicUrl?: string | n
   }
   const wss = new WebSocketServer({ noServer: true });
   const server = http.createServer(async (req, res) => {
-    await sendResponse(res, await handle(await toRequest(req), { upgrade: () => false }), req.method === "HEAD");
+    try {
+      await sendResponse(res, await handle(await toRequest(req), { upgrade: () => false }), req.method === "HEAD");
+    } catch {
+      // Request construction/body reads can fail before routing's error handler runs.
+      if (res.headersSent || res.destroyed) { res.destroy(); return; }
+      res.writeHead(400, { "content-type": "text/plain" });
+      res.end("Invalid HTTP request.");
+    }
   });
   // Routing stays in `handle`: an upgrade request runs the same handler, which names the
   // socket's subscription instead of answering, or answers with the error it would send.
   server.on("upgrade", async (req, socket, head) => {
-    let data = null as Client | null;
-    const response = await handle(await toRequest(req), { upgrade: (_req, o) => { data = o.data; return true; } });
-    if (!data) { socket.end(`HTTP/1.1 ${response.status} ${http.STATUS_CODES[response.status] ?? ""}\r\nconnection: close\r\n\r\n`); return; }
-    const client = data;
-    wss.handleUpgrade(req, socket, head, (raw) => {
-      const ws = Object.assign(raw, { data: client });
-      if (client.inbox) inboxSockets.add(ws);
-      else {
-        const set = topics.get(client.path) ?? new Set(); set.add(ws); topics.set(client.path, set);
-        if (fs.existsSync(client.path)) {
-          ensureWatch(client.path);
-          // A change between the page's first load and this socket opening (or during a reconnect gap) was
-          // broadcast to nobody; the current version lets the page notice and reload instead of going stale.
-          try { ws.send(JSON.stringify({ type: "hello", version: readDoc(client.path).version })); } catch {}
+    try {
+      let data = null as Client | null;
+      const response = await handle(await toRequest(req), { upgrade: (_req, o) => { data = o.data; return true; } });
+      if (!data) { socket.end(`HTTP/1.1 ${response.status} ${http.STATUS_CODES[response.status] ?? ""}\r\nconnection: close\r\n\r\n`); return; }
+      const client = data;
+      wss.handleUpgrade(req, socket, head, (raw) => {
+        const ws = Object.assign(raw, { data: client });
+        if (client.inbox) inboxSockets.add(ws);
+        else {
+          const set = topics.get(client.path) ?? new Set(); set.add(ws); topics.set(client.path, set);
+          if (fs.existsSync(client.path)) {
+            ensureWatch(client.path);
+            // A change between the page's first load and this socket opening (or during a reconnect gap) was
+            // broadcast to nobody; the current version lets the page notice and reload instead of going stale.
+            try { ws.send(JSON.stringify({ type: "hello", version: readDoc(client.path).version })); } catch {}
+          }
         }
-      }
-      ws.on("close", () => { if (client.inbox) inboxSockets.delete(ws); else topics.get(client.path)?.delete(ws); });
-      ws.on("message", (msg) => { if (String(msg) === "ping") ws.send("pong"); });
-    });
+        ws.on("close", () => { if (client.inbox) inboxSockets.delete(ws); else topics.get(client.path)?.delete(ws); });
+        ws.on("message", (msg) => { if (String(msg) === "ping") ws.send("pong"); });
+      });
+    } catch {
+      if (socket.destroyed) return;
+      socket.end("HTTP/1.1 400 Bad Request\r\nconnection: close\r\n\r\n");
+    }
   });
   await new Promise<void>((done, fail) => { server.once("error", fail); server.listen(port, () => { server.off("error", fail); done(); }); });
   const actualPort = (server.address() as AddressInfo).port;
