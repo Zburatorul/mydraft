@@ -161,8 +161,9 @@ async function toRequest(req: http.IncomingMessage): Promise<Request> {
   return new Request(`http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`, { method: req.method, headers, body: chunks.length ? Buffer.concat(chunks) : undefined });
 }
 async function sendResponse(res: http.ServerResponse, response: Response, head: boolean) {
+  const body = head ? undefined : Buffer.from(await response.arrayBuffer());
   res.writeHead(response.status, Object.fromEntries(response.headers));
-  res.end(head ? undefined : Buffer.from(await response.arrayBuffer()));
+  res.end(body);
 }
 
 /** Plain node:http + ws, so the published package runs on Node as well as Bun. */
@@ -357,47 +358,71 @@ export async function startServer(port = 7474, options: { publicUrl?: string | n
       }
       return new Response("not found", { status: 404 });
     } catch (err: any) {
-      return json({ error: err?.message ?? String(err), ...(err?.currentVersion ? { currentVersion: err.currentVersion } : {}) }, err?.status ?? 500);
+      const status = err?.status ?? 500;
+      if (status >= 500) console.error("Failed to handle HTTP request:", err);
+      return json({ error: err?.message ?? String(err), ...(err?.currentVersion ? { currentVersion: err.currentVersion } : {}) }, status);
     }
+  }
+  async function handleIncoming(req: http.IncomingMessage, srv: Upgrader): Promise<Response> {
+    let request: Request;
+    try { request = await toRequest(req); }
+    catch (err) {
+      console.error("Invalid HTTP request:", err);
+      return json({ error: "Invalid HTTP request." }, 400);
+    }
+    return handle(request, srv);
   }
   const wss = new WebSocketServer({ noServer: true });
   const server = http.createServer(async (req, res) => {
     try {
-      await sendResponse(res, await handle(await toRequest(req), { upgrade: () => false }), req.method === "HEAD");
-    } catch {
-      // Request construction/body reads can fail before routing's error handler runs.
+      await sendResponse(res, await handleIncoming(req, { upgrade: () => false }), req.method === "HEAD");
+    } catch (err) {
+      console.error("Failed to send HTTP response:", err);
       if (res.headersSent || res.destroyed) { res.destroy(); return; }
-      res.writeHead(400, { "content-type": "text/plain" });
-      res.end("Invalid HTTP request.");
+      res.writeHead(500, { "content-type": "text/plain" });
+      res.end(req.method === "HEAD" ? undefined : "Internal server error.");
     }
   });
   // Routing stays in `handle`: an upgrade request runs the same handler, which names the
   // socket's subscription instead of answering, or answers with the error it would send.
   server.on("upgrade", async (req, socket, head) => {
+    // A client can reset while routing is awaited, before ws installs its own listeners.
+    socket.on("error", () => socket.destroy());
+    let data = null as Client | null;
+    let response: Response;
     try {
-      let data = null as Client | null;
-      const response = await handle(await toRequest(req), { upgrade: (_req, o) => { data = o.data; return true; } });
-      if (!data) { socket.end(`HTTP/1.1 ${response.status} ${http.STATUS_CODES[response.status] ?? ""}\r\nconnection: close\r\n\r\n`); return; }
-      const client = data;
-      wss.handleUpgrade(req, socket, head, (raw) => {
-        const ws = Object.assign(raw, { data: client });
-        if (client.inbox) inboxSockets.add(ws);
-        else {
-          const set = topics.get(client.path) ?? new Set(); set.add(ws); topics.set(client.path, set);
-          if (fs.existsSync(client.path)) {
-            ensureWatch(client.path);
-            // A change between the page's first load and this socket opening (or during a reconnect gap) was
-            // broadcast to nobody; the current version lets the page notice and reload instead of going stale.
-            try { ws.send(JSON.stringify({ type: "hello", version: readDoc(client.path).version })); } catch {}
-          }
-        }
-        ws.on("close", () => { if (client.inbox) inboxSockets.delete(ws); else topics.get(client.path)?.delete(ws); });
-        ws.on("message", (msg) => { if (String(msg) === "ping") ws.send("pong"); });
-      });
-    } catch {
-      if (socket.destroyed) return;
-      socket.end("HTTP/1.1 400 Bad Request\r\nconnection: close\r\n\r\n");
+      response = await handleIncoming(req, { upgrade: (_req, o) => { data = o.data; return true; } });
+    } catch (err) {
+      console.error("Failed to route WebSocket upgrade:", err);
+      if (!socket.destroyed) socket.end("HTTP/1.1 500 Internal Server Error\r\nconnection: close\r\n\r\n");
+      return;
     }
+    if (socket.destroyed) return;
+    if (!data) { socket.end(`HTTP/1.1 ${response.status} ${http.STATUS_CODES[response.status] ?? ""}\r\nconnection: close\r\n\r\n`); return; }
+    const client = data;
+    wss.handleUpgrade(req, socket, head, (raw) => {
+      const ws = Object.assign(raw, { data: client });
+      // Install cleanup before anything that can fail during connection setup.
+      ws.on("close", () => { if (client.inbox) inboxSockets.delete(ws); else topics.get(client.path)?.delete(ws); });
+      ws.on("error", (err) => { console.error("WebSocket connection failed:", err); ws.terminate(); });
+      ws.on("message", (msg) => { if (String(msg) === "ping") ws.send("pong"); });
+      if (client.inbox) inboxSockets.add(ws);
+      else {
+        const exists = fs.existsSync(client.path);
+        try { if (exists) ensureWatch(client.path); }
+        catch (err) {
+          console.error("Failed to watch review document:", err);
+          ws.close(1011, "Unable to watch document.");
+          return;
+        }
+        const set = topics.get(client.path) ?? new Set(); set.add(ws); topics.set(client.path, set);
+        if (exists) {
+          // A change between the page's first load and this socket opening (or during a reconnect gap) was
+          // broadcast to nobody; the current version lets the page notice and reload instead of going stale.
+          try { ws.send(JSON.stringify({ type: "hello", version: readDoc(client.path).version })); } catch {}
+        }
+      }
+    });
   });
   await new Promise<void>((done, fail) => { server.once("error", fail); server.listen(port, () => { server.off("error", fail); done(); }); });
   const actualPort = (server.address() as AddressInfo).port;
