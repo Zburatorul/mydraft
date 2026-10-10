@@ -1,6 +1,7 @@
 // Source-of-truth model for a Markdown document with Roughdraft-flavored CriticMarkup.
 // The file is the model. This module only *reads* it into a shape the renderer and
 // annotation layer can use, and *splices* annotations back at exact source offsets.
+import { createHash } from "node:crypto";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { extractRoughdraftReviewIndex } from "../vendor/rfm/index.js";
 
@@ -144,7 +145,7 @@ function makeMaps(segs: Seg[], bodyLength: number) {
 }
 
 export function hashVersion(source: string): string {
-  return new Bun.CryptoHasher("sha1").update(source).digest("hex").slice(0, 12);
+  return createHash("sha1").update(source).digest("hex").slice(0, 12);
 }
 
 export function loadDoc(path: string, source: string): Doc {

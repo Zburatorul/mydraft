@@ -1,0 +1,12 @@
+{
+  // Emits dist/ so the published package runs on plain Node, which refuses to strip
+  // types from files under node_modules. Type errors are `npm run typecheck`'s job.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false, "noCheck": true, "allowJs": false,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "src", "outDir": "dist", "declaration": false, "sourceMap": false
+  },
+  "include": ["src/*.ts"],
+  "exclude": ["src/*.test.ts", "src/*.e2e.ts"]
+}
