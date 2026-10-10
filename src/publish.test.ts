@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { publishDocument } from "./publish.ts";
 
+const VERSION = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "../package.json"), "utf8")).version;
+
 const roots: string[] = [];
 
 function workspace(): string {
@@ -42,7 +44,7 @@ describe("publishDocument", () => {
       source: { file: "source.md", originalName: "wip.md" },
       artifact: { file: "index.html", mediaType: "text/html" },
       checks: [{ id: "server-render-errors", status: "passed" }],
-      tool: { name: "myd", version: "0.0.1" },
+      tool: { name: "myd", version: VERSION },
     });
     expect(manifest.source.sha256).toMatch(/^[a-f0-9]{64}$/);
     expect(manifest.artifact.sha256).toMatch(/^[a-f0-9]{64}$/);

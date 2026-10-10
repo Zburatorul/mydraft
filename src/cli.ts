@@ -2,7 +2,8 @@
 // myd — agent-friendly CLI for the mydraft viewer. Every command supports --json.
 import path from "node:path";
 import fs from "node:fs";
-import { spawn, execFileSync } from "node:child_process";
+import os from "node:os";
+import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { STATE_FILE } from "./server.ts";
 import { loadDoc, reply as replyDoc, resolve as resolveDoc } from "./doc.ts";
 import { DocumentVersionConflict, mutateDocument, type DocumentMutationResult } from "./document-mutation.ts";
@@ -14,7 +15,7 @@ import { handleViewerUrl, reviewViewerUrl } from "./viewer-url.ts";
 import { pathParam } from "./url-path.ts";
 import { commandHelp, topLevelHelp, unknownCommand } from "./cli-help.ts";
 
-const ROOT = path.resolve(import.meta.dir, "..");
+const ROOT = path.resolve(import.meta.dirname, "..");
 const argv = process.argv.slice(2);
 const flags: Record<string, string | boolean> = {};
 const pos: string[] = [];
@@ -36,7 +37,7 @@ const abs = (p?: string) => { if (!p) die("missing <file.md>"); const a = path.r
 const waitTimeout = () => {
   if (flags.timeout === undefined) return DEFAULT_WAIT_TIMEOUT_SEC;
   const seconds = Number(flags.timeout);
-  if (!Number.isFinite(seconds) || seconds <= 0) die("--timeout must be a positive number of seconds");
+  if (!Number.isFinite(seconds) || seconds < 0) die("--timeout must be 0 (no limit) or a positive number of seconds");
   return seconds;
 };
 const loadStructuralCheck = () => import("./check.ts");
@@ -60,12 +61,14 @@ async function ensureServer(): Promise<{ port: number; publicUrl?: string }> {
   // Check this process's MYD_PUBLIC_URL before spawning: the server refuses to boot on a
   // bad value, and "could not start myd server" would not say which value was wrong.
   publicOriginOf(null);
-  const child = spawn(process.execPath, [path.join(ROOT, "src/server.ts")], { detached: true, stdio: "ignore", env: { ...process.env } });
+  // Sibling of this file: src/server.ts from a checkout, dist/server.js from the package.
+  const serverScript = path.join(import.meta.dirname, `server${path.extname(import.meta.filename)}`);
+  const child = spawn(process.execPath, [serverScript], { detached: true, stdio: "ignore", env: { ...process.env } });
   child.unref();
   // Cold syntax-highlighter/module startup can exceed four seconds on a loaded CI host. A late
   // server is worse than a slow one: the CLI reports failure even though the detached child comes
   // online moments later and keeps the port occupied. Give that one-time startup a bounded runway.
-  for (let i = 0; i < 100; i++) { await Bun.sleep(100); const a = await serverAlive(); if (a) return a; }
+  for (let i = 0; i < 100; i++) { await new Promise((r) => setTimeout(r, 100)); const a = await serverAlive(); if (a) return a; }
   die("could not start myd server"); return { port: 0 };
 }
 // One agent session that re-opens the same document is continuing its own review, not
@@ -126,6 +129,14 @@ async function reviewLifecycle(port: number, reviewId: string): Promise<string |
     return r.ok ? ((await r.json()) as { state: string }).state : null;
   } catch { return null; }
 }
+/** The first Done recorded for this document after `since`, for a wait without a review id. */
+async function doneEventFor(port: number, file: string, since: string): Promise<any | null> {
+  try {
+    const r = await fetch(`http://localhost:${port}/api/done-events?path=${pathParam(file)}`, { signal: AbortSignal.timeout(2000) });
+    if (!r.ok) return null;
+    return ((await r.json()) as any[]).find((ev) => ev.at > since) ?? null;
+  } catch { return null; }
+}
 async function doneEvent(port: number, reviewId: string): Promise<any | null> {
   try {
     const r = await fetch(`http://localhost:${port}/api/done-events?review=${encodeURIComponent(reviewId)}`, { signal: AbortSignal.timeout(2000) });
@@ -135,29 +146,74 @@ async function doneEvent(port: number, reviewId: string): Promise<any | null> {
   } catch { return null; }
 }
 // Subscribes by path so a Done landing on a *different* review of this document is still
-// observed, and polls our own record so a review that can no longer be completed ends the
-// wait with a reason instead of burning the full timeout in silence.
+// observed, and polls the server so a Done that arrived while the socket was down is not lost
+// and a review that can no longer be completed ends the wait with a reason instead of burning
+// the full timeout in silence. A dropped socket reconnects with backoff rather than ending the
+// wait, and every way out prints why: an agent that runs this in the background only ever
+// sees the output, so an exit without a reason is indistinguishable from a lost review.
+// `timeoutSec` 0 means no limit.
 async function waitDone(port: number, file: string, timeoutSec: number, reviewId?: string): Promise<any> {
-  return new Promise((res, rej) => {
-    const ws = new WebSocket(`ws://localhost:${port}/ws?path=${pathParam(file)}`);
-    const settle = (value: unknown) => { clearInterval(ping); clearInterval(lifecycle); clearTimeout(t); ws.close(); res(value); };
-    const t = setTimeout(() => settle({ timedOut: true, timeoutSec }), timeoutSec * 1000);
-    const ping = setInterval(() => { try { ws.send("ping"); } catch {} }, 20000);
-    const lifecycle = setInterval(async () => {
-      if (!reviewId) return;
-      const state = await reviewLifecycle(port, reviewId);
-      if (!state || state === "active") return;
-      if (state === "completed") { const ev = await doneEvent(port, reviewId); if (ev) return settle({ type: "done", ...ev }); return; }
-      settle({ stopped: state, reviewId });
-    }, 5000);
-    ws.onmessage = (e) => {
-      if (e.data === "pong") return;
-      const m = JSON.parse(String(e.data));
-      if (m.type !== "done") return;
-      if (!reviewId || m.reviewId === reviewId) return settle(m);
-      console.error(`Note: a different review of this document (${m.reviewId}) was completed; still waiting on ${reviewId}.`);
+  const since = new Date().toISOString();
+  return new Promise((res) => {
+    let ws: WebSocket | null = null;
+    let settled = false;
+    let failures = 0;
+    let reconnect: ReturnType<typeof setTimeout> | null = null;
+    const onSignal = (signal: NodeJS.Signals) => {
+      console.error(`Stopped waiting: received ${signal} before Done Reviewing.`);
+      process.exit(signal === "SIGINT" ? 130 : 143);
     };
-    ws.onerror = (e) => { clearInterval(ping); clearInterval(lifecycle); clearTimeout(t); rej(e); };
+    const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
+    for (const signal of signals) process.on(signal, onSignal);
+    const settle = (value: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(ping); clearInterval(poll); if (t) clearTimeout(t);
+      if (reconnect) clearTimeout(reconnect);
+      for (const signal of signals) process.off(signal, onSignal);
+      ws?.close();
+      res(value);
+    };
+    const t = timeoutSec > 0 ? setTimeout(() => settle({ timedOut: true, timeoutSec }), timeoutSec * 1000) : null;
+    const ping = setInterval(() => { try { ws?.send("ping"); } catch {} }, 20000);
+    const poll = setInterval(async () => {
+      if (reviewId) {
+        const state = await reviewLifecycle(port, reviewId);
+        if (!state || state === "active") return;
+        if (state === "completed") { const ev = await doneEvent(port, reviewId); if (ev) settle({ type: "done", ...ev }); return; }
+        settle({ stopped: state, reviewId });
+        return;
+      }
+      const ev = await doneEventFor(port, file, since);
+      if (ev) settle({ type: "done", ...ev });
+    }, 5000);
+    const connect = () => {
+      if (settled) return;
+      const socket = new WebSocket(`ws://localhost:${port}/ws?path=${pathParam(file)}`);
+      ws = socket;
+      socket.onopen = () => {
+        if (failures) console.error("Reconnected to the myd server; still waiting.");
+        failures = 0;
+      };
+      socket.onmessage = (e) => {
+        if (e.data === "pong") return;
+        let m: any;
+        try { m = JSON.parse(String(e.data)); } catch { return; }
+        if (m.type !== "done") return;
+        if (!reviewId || m.reviewId === reviewId) return settle(m);
+        console.error(`Note: a different review of this document (${m.reviewId}) was completed; still waiting on ${reviewId}.`);
+      };
+      // An error is always followed by close, which owns the retry.
+      socket.onerror = () => {};
+      socket.onclose = () => {
+        if (settled || ws !== socket) return;
+        const delay = Math.min(30000, 1000 * 2 ** failures);
+        if (failures === 0) console.error(`Lost the connection to the myd server on port ${port}; reconnecting (the wait continues).`);
+        failures++;
+        reconnect = setTimeout(connect, delay);
+      };
+    };
+    connect();
   });
 }
 
@@ -189,6 +245,8 @@ if (flags.help && cmd && cmd !== "help") {
   die(unknownCommand(cmd));
 }
 
+if (flags.version && !cmd) { console.log(JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version); process.exit(0); }
+
 switch (cmd) {
   case undefined: case "help": case "--help": {
     if (!pos[0]) { console.log(topLevelHelp()); break; }
@@ -198,10 +256,15 @@ switch (cmd) {
   }
   case "install-prompt": {
     const block = fs.readFileSync(path.join(ROOT, "docs/prompt.md"), "utf8").trim();
-    // The marker names this checkout, wherever it lives; the match accepts any marker text so a
-    // block installed from another checkout (or an older release) is replaced, not duplicated.
-    const BEGIN = `<!-- myd:begin (managed by \`myd install-prompt\`; edit ${path.join(ROOT, "docs/prompt.md")} instead) -->`, END = "<!-- myd:end -->";
-    const home = require("node:os").homedir();
+    // From a checkout the marker names it, wherever it lives; a packaged install lives in a directory
+    // nobody should edit, so its marker names none. The match accepts any marker text, so a block
+    // installed from another checkout (or an older release) is replaced, not duplicated.
+    const fromCheckout = fs.existsSync(path.join(ROOT, "src/cli.ts"));
+    const BEGIN = fromCheckout
+      ? `<!-- myd:begin (managed by \`myd install-prompt\`; edit ${path.join(ROOT, "docs/prompt.md")} instead) -->`
+      : "<!-- myd:begin (managed by `myd install-prompt`; rerun it to update) -->";
+    const END = "<!-- myd:end -->";
+    const home = os.homedir();
     const targets: string[] = [];
     if (flags.file) targets.push(path.resolve(String(flags.file)));
     else { if (flags.claude || !flags.codex) targets.push(path.join(home, ".claude/CLAUDE.md")); if (flags.codex || !flags.claude) targets.push(path.join(process.env.CODEX_HOME ?? path.join(home, ".codex"), "AGENTS.md")); }
@@ -212,16 +275,18 @@ switch (cmd) {
       const re = /\n?<!-- myd:begin\b[^\n]*?-->[\s\S]*?<!-- myd:end -->\n?/;
       const had = re.test(cur);
       let next = cur.replace(re, "\n");
-      // also strip a legacy unmanaged block (Roughdraft's, or an earlier hand-written myd block) that starts with a known heading
-      next = next.replace(/(^|\n)## (?:Roughdraft|myd — document review[^\n]*|Document review with myd[^\n]*)\n[\s\S]*?(?=\n## (?!myd)|$)/, "$1");
+      // also strip a legacy hand-written myd block that starts with a known heading; another tool's section (e.g. Roughdraft's) is the user's to keep
+      next = next.replace(/(^|\n)## (?:myd — document review[^\n]*|Document review with myd[^\n]*)\n[\s\S]*?(?=\n## (?!myd)|$)/, "$1");
       next = next.replace(/\n{3,}/g, "\n\n").trim();
       if (!flags.remove) next = (next ? next + "\n\n" : "") + `${BEGIN}\n${block}\n${END}\n`; else next = next ? next + "\n" : "";
       const changed = next !== cur;
       if (changed) fs.writeFileSync(t, next);
       results.push({ file: t, action: flags.remove ? (had ? "removed" : "absent") : had ? (changed ? "updated" : "unchanged") : "installed" });
     }
-    // skill: symlink the repo's skill/ dir into each agent's skills directory (live-updating)
+    // skill: symlink the repo's skill/ dir into each agent's skills directory (live-updating).
+    // An npx run lives in a cache npm may prune, so that copy is copied instead of linked.
     const skillSrc = path.join(ROOT, "skill");
+    const ephemeral = ROOT.includes(`${path.sep}_npx${path.sep}`);
     const skillTargets = flags.file ? [] : [ ...((flags.claude || !flags.codex) ? [path.join(home, ".claude/skills/myd")] : []), ...((flags.codex || !flags.claude) ? [path.join(process.env.CODEX_HOME ?? path.join(home, ".codex"), "skills/myd")] : []) ];
     for (const t of skillTargets) {
       fs.mkdirSync(path.dirname(t), { recursive: true });
@@ -230,16 +295,18 @@ switch (cmd) {
       let isLink = false; try { isLink = fs.lstatSync(t).isSymbolicLink() && fs.realpathSync(t) === fs.realpathSync(skillSrc); } catch {}
       if (isLink) { results.push({ file: t, action: "unchanged" }); continue; }
       if (exists) fs.rmSync(t, { recursive: true, force: true });
+      if (ephemeral) { fs.cpSync(skillSrc, t, { recursive: true }); results.push({ file: t, action: "copied" }); continue; }
       fs.symlinkSync(skillSrc, t); results.push({ file: t, action: "linked" });
     }
     // launcher: <bin-dir>/myd → this checkout's cli.ts, so `myd` works wherever the repo lives.
     // Only a symlink into a mydraft checkout (…/src/cli.ts) counts as ours; anything else is left alone.
     // A scoped --remove (--claude/--codex) keeps it, since the other agent may still use it.
+    // A packaged install (npm/bun add -g) ships no src/ and already has `myd` on PATH: no launcher.
     const cliSrc = path.join(ROOT, "src/cli.ts");
     const binDir = path.resolve(typeof flags["bin-dir"] === "string" ? flags["bin-dir"] : path.join(home, ".local/bin"));
     const launcher = path.join(binDir, "myd");
     const warn = (m: string) => { console.error(`Warning: ${m}`); return m; };
-    if (!flags.file && !(flags.remove && (flags.claude || flags.codex))) {
+    if (!flags.file && !(flags.remove && (flags.claude || flags.codex)) && fs.existsSync(cliSrc)) {
       let link: string | null = null, present = false;
       try { const st = fs.lstatSync(launcher); present = true; if (st.isSymbolicLink()) link = path.resolve(binDir, fs.readlinkSync(launcher)); } catch {}
       let points = false; try { points = link !== null && fs.realpathSync(link) === fs.realpathSync(cliSrc); } catch {}
@@ -258,10 +325,10 @@ switch (cmd) {
       const onPath = (process.env.PATH ?? "").split(path.delimiter).some((d) => d && path.resolve(d) === binDir);
       if (!flags.remove && results.at(-1).action !== "skipped" && !onPath) results.at(-1).warning = warn(`${binDir} is not on PATH; add it (e.g. export PATH="${binDir}:$PATH") so \`myd\` resolves`);
     }
-    out(results, [`myd checkout ${ROOT}`, ...results.map((r) => `${r.action.padEnd(9)} ${r.file}`)].join("\n")); break;
+    out(results, [`${fromCheckout ? "myd checkout" : "myd package"} ${ROOT}`, ...results.map((r) => `${r.action.padEnd(9)} ${r.file}`)].join("\n")); break;
   }
   case "guide": {
-    const g = fs.readFileSync(path.join(ROOT, "docs/agent-guide.md"), "utf8");
+    const g = fs.readFileSync(path.join(ROOT, "skill/references/agent-guide.md"), "utf8");
     if (!pos[0]) { console.log(g); break; }
     const VERB_TOPIC: Record<string, string> = { view: "workflow", wait: "workflow", comments: "workflow", reply: "workflow", resolve: "workflow", diff: "workflow", shot: "workflow", blocks: "blocks", block: "blocks", "set-block": "blocks", insert: "blocks", object: "explainers", "set-object": "explainers", explainer: "explainers", export: "export", serve: "api", status: "api", annotate: "objects", comment: "objects", suggest: "objects", markup: "criticmarkup", mermaid: "rich", vega: "rich", html: "rich", math: "rich" };
     if (VERB_TOPIC[pos[0]]) pos[0] = VERB_TOPIC[pos[0]]!;
@@ -273,7 +340,7 @@ switch (cmd) {
     const { startServer } = await import("./server.ts");
     if (flags["public-url"] === true) die("--public-url requires a URL, e.g. --public-url https://review.example.test");
     let s;
-    try { s = startServer(Number(process.env.MYD_PORT ?? 7474), { publicUrl: flags["public-url"] === undefined ? null : String(flags["public-url"]) }); }
+    try { s = await startServer(Number(process.env.MYD_PORT ?? 7474), { publicUrl: flags["public-url"] === undefined ? null : String(flags["public-url"]) }); }
     catch (error) { die(error instanceof InvalidPublicOrigin ? error.message : String(error)); break; }
     console.log(`myd server on http://localhost:${s!.port}`);
     if (s!.publicOrigin) console.log(`public review origin ${s!.publicOrigin}`);
@@ -317,10 +384,11 @@ switch (cmd) {
     // so automation can tell a real failure from a headless host that merely could not launch one.
     if (!flags.wait) { out({ url, reviewId, remote: !!origin, browserOpened: launch.opened, ...(launch.error ? { browserError: launch.error } : {}), ...(origin ? { publicUrl: origin } : {}) }, url + remoteHint); break; }
     const timeoutSec = waitTimeout();
-    console.error(url); if (remoteHint) console.error(remoteHint.trim()); console.error(`Waiting for Done Reviewing… (timeout: ${timeoutSec}s)`);
+    console.error(url); if (remoteHint) console.error(remoteHint.trim()); console.error(`Waiting for Done Reviewing… (${timeoutSec ? `timeout: ${timeoutSec}s` : "no timeout"})`);
     const ev = await waitDone(port, file, timeoutSec, reviewId);
     out(ev, ev.timedOut ? "timed out"
-      : ev.stopped ? `This review is ${ev.stopped}; nobody can complete it. Open a fresh review with myd view.`
+      : ev.stopped === "superseded" ? `Review ${ev.reviewId} was replaced by a newer review of this document, so this wait is obsolete. Nothing to do.`
+      : ev.stopped ? `Review ${ev.reviewId} is ${ev.stopped}; nobody can complete it. Open a fresh review with myd view if one is still needed.`
       : `Review completed for ${file}${ev.note ? `\nNote: ${ev.note}` : ""}`);
     if (ev.timedOut || ev.stopped) process.exit(1); break;
   }
@@ -391,7 +459,7 @@ switch (cmd) {
   case "set-object": {
     const file = abs(pos[0]);
     if (!flags.version) die("set-object requires --version from myd objects --json");
-    const replacement = flags.file ? fs.readFileSync(String(flags.file), "utf8") : await Bun.stdin.text();
+    const replacement = flags.file ? fs.readFileSync(String(flags.file), "utf8") : fs.readFileSync(0, "utf8");
     try {
       const result = mutateDocument(file, (doc) => replaceSemanticObject(doc, pos[1] ?? "", replacement), { expectedVersion: String(flags.version), dryRun: DRY_RUN });
       if (DRY_RUN) { dryRunReport(file, result, { ref: pos[1]! }, { before: getSemanticObject(result.previous, pos[1]!)?.source ?? "", after: getSemanticObject(result.document, pos[1]!)?.source ?? "" }); break; }
@@ -409,7 +477,7 @@ switch (cmd) {
     const target = pos[1] && pos[1] !== "-" ? pos[1] : undefined;
     if (!target && !targetGuard) die(`${cmd} requires a block id or --target-guard <guard> from myd blocks --json`);
     if (!flags.version && !expected && !targetGuard) die(`${cmd} requires --version from myd blocks --json, or a content guard (--expect / --target-guard) from that listing`);
-    const content = (flags.file ? fs.readFileSync(String(flags.file), "utf8") : await Bun.stdin.text()).replace(/\s+$/, "");
+    const content = (flags.file ? fs.readFileSync(String(flags.file), "utf8") : fs.readFileSync(0, "utf8")).replace(/\s+$/, "");
     let resolved = target ?? "", region = { before: "", after: "" }, shiftFrom = 0;
     try {
       const result = mutateDocument(file, (doc) => {
@@ -450,7 +518,7 @@ switch (cmd) {
     const width = Number(flags.width ?? 1200), height = Number(flags.height ?? 1600);
     const chrome = ["google-chrome", "chromium", "chromium-browser"].find((c) => { try { execFileSync("which", [c], { stdio: "ignore" }); return true; } catch { return false; } });
     if (!chrome) die("no chrome/chromium found");
-    const udd = fs.mkdtempSync(path.join(require("node:os").tmpdir(), "myd-chrome-"));
+    const udd = fs.mkdtempSync(path.join(os.tmpdir(), "myd-chrome-"));
     execFileSync(chrome!, ["--headless=new", "--disable-gpu", "--no-sandbox", "--hide-scrollbars", `--user-data-dir=${udd}`, `--window-size=${width},${height}`, "--virtual-time-budget=4000", `--screenshot=${outPng}`, url], { stdio: "ignore" });
     fs.rmSync(udd, { recursive: true, force: true });
     out({ png: outPng }, outPng); break;
@@ -468,6 +536,6 @@ switch (cmd) {
     });
     out(result, `Published ${result.releaseId}\nArtifact: ${result.artifactPath}\nManifest: ${result.manifestPath}`); break;
   }
-  case "diff": { const r = Bun.spawnSync(["python3", path.join(ROOT, "bin/rd-diff"), ...pos], { stdout: "inherit", stderr: "inherit" }); process.exit(r.exitCode); }
+  case "diff": { const r = spawnSync("python3", [path.join(ROOT, "bin/rd-diff"), ...pos], { stdio: "inherit" }); process.exit(r.status ?? 1); }
   default: die(unknownCommand(cmd));
 }

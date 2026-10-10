@@ -16,12 +16,15 @@ description: Review, annotate, and discuss Markdown documents with the user thro
 ## Core loop
 
 ```bash
-myd view "/abs/doc.md"                    # write the doc first; returns at once — tell the user, end the turn
-myd comments "/abs/doc.md"                # next turn: pending items, each with its block's guard
+myd view "/abs/doc.md" --wait --timeout 0  # Claude Code, run in the background: Done wakes you
+myd view "/abs/doc.md"                    # elsewhere: tell the user, end the turn
+myd comments "/abs/doc.md"                # when you resume: pending items, each with its block's guard
 myd reply FILE c3 "…"  ·  myd resolve FILE c3 [--summary "…"]
 myd set-block FILE --target-guard G --file new.md    # edit the block a comment points at
-myd view "/abs/doc.md"                    # hand back (nonblocking), end the turn
+myd view "/abs/doc.md" ...                # hand back the same way, end the turn
 ```
+
+Never poll a background wait; ignore one that reports its review was replaced.
 
 `[note — document-level, from Done Reviewing]` items are read-only: act on them, never reply or resolve. If only the user can answer, ask in the thread and hand back.
 
@@ -38,7 +41,7 @@ Name blocks you will revisit: `## Title {#name}`, ```` ```explainer {#name} ````
 
 `myd help <command>` gives exact flags and guards. `myd guide <topic>` (same text as `references/agent-guide.md`) covers:
 
-- `workflow`: synchronous `--wait`, reading comment output, and verifying renders with `check` and `shot`.
+- `workflow`: the background `--wait` handoff, reading comment output, and verifying renders with `check` and `shot`.
 - `blocks`: guards, batches, `--dry-run`.
 - `objects`: what can be commented on.
 - `explainers`: native semantic objects.

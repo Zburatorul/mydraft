@@ -4,7 +4,7 @@ import path from "node:path";
 import { loadDoc } from "./doc.ts";
 import { assertNoExportRenderErrors, exportHtml } from "./export.ts";
 
-const PACKAGE = JSON.parse(fs.readFileSync(path.resolve(import.meta.dir, "../package.json"), "utf8")) as { version: string };
+const PACKAGE = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, "../package.json"), "utf8")) as { version: string };
 const RELEASE_LAYOUT = { source: "source.md", artifact: "index.html", manifest: "manifest.json" } as const;
 
 export type PublishOptions = {
