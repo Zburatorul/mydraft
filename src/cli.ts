@@ -84,7 +84,7 @@ function reviewSession(): string | undefined {
   }
   return undefined;
 }
-async function trackReview(port: number, file: string): Promise<{ reviewId: string }> {
+async function trackReview(port: number, file: string): Promise<{ reviewId: string; warning?: string }> {
   const session = reviewSession();
   // A bare --from-review asks the server for this document's latest completed review.
   const predecessorReviewId = typeof flags["from-review"] === "string" ? String(flags["from-review"]).trim() : "";
@@ -100,7 +100,9 @@ async function trackReview(port: number, file: string): Promise<{ reviewId: stri
     }),
   });
   if (!r.ok) die(`could not start review: ${(await r.json().catch(() => ({})))?.error ?? r.statusText}`);
-  return r.json() as Promise<{ reviewId: string }>;
+  const tracked = await r.json() as { reviewId: string; warning?: string };
+  if (tracked.warning) console.error(`Warning: ${tracked.warning}`);
+  return tracked;
 }
 /**
  * Best-effort desktop launch, reported rather than enforced. By the time this runs the review
@@ -366,6 +368,9 @@ switch (cmd) {
   case "stop": { const s = await serverAlive(); if (s) { try { process.kill(s.pid); } catch {} } out({ stopped: !!s }, s ? "stopped" : "not running"); break; }
   case "view": {
     if (typeof flags["from-review"] === "string" && !flags["from-review"].trim()) die("--from-review needs a review ID, or no value for the latest completed review");
+    // `myd view --from-review FILE`: the parser hands FILE to the flag as its value. A review id is
+    // never a Markdown path, so read it as the file with a bare flag.
+    if (!pos[0] && typeof flags["from-review"] === "string" && flags["from-review"].endsWith(".md")) { pos[0] = flags["from-review"]; flags["from-review"] = true; }
     const file = abs(pos[0]);
     // Preflight before the server is even started: a document that cannot open as a coherent
     // review should not become one. Mermaid is loaded only when the document contains a Mermaid

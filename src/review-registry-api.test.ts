@@ -277,8 +277,10 @@ describe("durable review registry API", () => {
       return review.reviewId;
     };
 
+    // Nothing completed yet: a plain review opens, with a warning instead of a failure.
     const unlinked = await postJson("/api/reviews", { path: doc, fromLatestReview: true });
-    expect(unlinked.status).toBe(409);
+    expect(unlinked.status).toBe(201);
+    expect((await unlinked.json() as { warning?: string }).warning).toContain("no completed review");
 
     await complete();
     fs.writeFileSync(doc, "# Plan\n\nSecond draft.\n");
@@ -286,6 +288,14 @@ describe("durable review registry API", () => {
     fs.writeFileSync(doc, "# Plan\n\nThird draft.\n");
 
     const successor = await runView(doc, "latest-agent", true);
+    // The parser gives a flag the next non-flag token, so `--from-review FILE` must still mean the file.
+    const flagFirst = Bun.spawn([process.execPath, path.join(ROOT, "src/cli.ts"), "view", "--from-review", doc, "--json", "--no-open", "--skip-check"], {
+      cwd: ROOT, env: { ...process.env as Record<string, string>, MYD_HOME: path.join(tempDir, "state"), MYD_NO_OPEN: "1", MYD_SESSION: "latest-agent-2" }, stdout: "pipe", stderr: "pipe",
+    });
+    const flagFirstOut = await new Response(flagFirst.stdout).text();
+    expect(await flagFirst.exited).toBe(0);
+    const flagFirstRecord = await (await fetch(`${baseUrl}/api/reviews/${encodeURIComponent(JSON.parse(flagFirstOut).reviewId)}`)).json() as { review: { predecessorReviewId: string | null } };
+    expect(flagFirstRecord.review.predecessorReviewId).toBe(latest);
     const record = await (await fetch(`${baseUrl}/api/reviews/${encodeURIComponent(successor.reviewId)}`)).json() as { review: { predecessorReviewId: string | null } };
     expect(record.review.predecessorReviewId).toBe(latest);
   }, TEST_TIMEOUT_MS);

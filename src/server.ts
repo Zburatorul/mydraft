@@ -129,7 +129,9 @@ function buildInbox(statuses: string[] | null): InboxRow[] {
       try {
         const archived = reviewHistory.archive(record.id);
         const doc = loadDoc(record.path, archived?.source ?? fs.readFileSync(record.path, "utf8"));
-        return inboxRow(record, { revision: revisionTracker.current(record.path)?.number ?? null, items: doc.items });
+        // A completed review lists its snapshot's items, so it reports that snapshot's revision too.
+        const revision = archived ? archived.revision?.number ?? null : revisionTracker.current(record.path)?.number ?? null;
+        return inboxRow(record, { revision, items: doc.items });
       } catch { return inboxRow(record, null); }
     });
   return sortInbox(rows);
@@ -232,9 +234,12 @@ export async function startServer(port = 7474, options: { publicUrl?: string | n
         }
         const doc = readDocFor(b.path, b.reviewId);
         let predecessorReviewId = typeof b.predecessorReviewId === "string" && b.predecessorReviewId ? b.predecessorReviewId : null;
+        // "Latest" is a convenience, not a demand: a document whose Done predates review snapshots (or
+        // that was never completed in the viewer) still opens, as a plain review with a warning.
+        let warning: string | undefined;
         if (!predecessorReviewId && b.fromLatestReview === true) {
           predecessorReviewId = reviewHistory.latestFor(doc.path)?.reviewId ?? null;
-          if (!predecessorReviewId) throw Object.assign(new Error("This document has no completed review to compare against."), { status: 409 });
+          if (!predecessorReviewId) warning = "This document has no completed review to compare against; opened a plain review.";
         }
         if (predecessorReviewId) {
           const predecessor = reviewHistory.archive(predecessorReviewId);
@@ -249,7 +254,7 @@ export async function startServer(port = 7474, options: { publicUrl?: string | n
         if (predecessorReviewId) reviewHistory.link({ reviewId: status.reviewId, predecessorReviewId, path: doc.path });
         broadcast(doc.path, { type: "tracking-changed" });
         notifyInbox();
-        return json({ ...status, review: publicReview(reviewTracker.get(status.reviewId)!), revision: revisionTracker.current(doc.path) }, p === "/api/reviews" ? 201 : 200);
+        return json({ ...status, review: publicReview(reviewTracker.get(status.reviewId)!), revision: revisionTracker.current(doc.path), ...(warning ? { warning } : {}) }, p === "/api/reviews" ? 201 : 200);
       }
       if (req.method === "GET" && p === "/api/inbox") {
         const requested = url.searchParams.getAll("status").flatMap((v) => v.split(",")).map((v) => v.trim()).filter(Boolean);

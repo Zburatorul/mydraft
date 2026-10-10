@@ -82,7 +82,7 @@ export class ReviewHistory {
   latestFor(path: string): ArchivedReview | null {
     let latest: ArchivedReview | undefined;
     for (const archive of this.archives.values()) {
-      if (archive.path === path && (!latest || archive.completedAt > latest.completedAt)) latest = archive;
+      if (archive.path === path && (!latest || archive.completedAt >= latest.completedAt)) latest = archive; // ties: the later-inserted wins
     }
     return latest ? this.archive(latest.reviewId) : null;
   }
