@@ -676,4 +676,193 @@ describe("cross-element annotation in a real browser", () => {
     expect(await page.locator("#changesDlg ins").allTextContents()).toContain("Add adversarial trials.");
     await page.close();
   }, E2E_TIMEOUT_MS);
+
+  test("a linked review opens on rendered changes with prior feedback one action away", async () => {
+    const fixture = path.join(tempDir, "linked-change-review.md");
+    fs.writeFileSync(fixture, [
+      "# Evaluation plan {#plan}",
+      "",
+      "Context stays the same.",
+      "",
+      "## Decision rule {#decision-rule}",
+      "",
+      "The evaluator {==passes ambiguous traces==}{>>Explain how ambiguity is classified.<<}{#c1}.",
+      "",
+      "---",
+      "comments:",
+      "  c1: {by: user, at: 2026-09-23T18:00:00Z, status: open}",
+      "",
+    ].join("\n"));
+    const firstResponse = await fetch(`${baseUrl}/api/reviews`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: fixture }),
+    });
+    const first = await firstResponse.json() as { reviewId: string; currentVersion: string };
+    const completed = await fetch(`${baseUrl}/api/done`, {
+      method: "POST",
+      body: JSON.stringify({ reviewId: first.reviewId, version: first.currentVersion }),
+    });
+    expect(completed.status).toBe(200);
+
+    fs.writeFileSync(fixture, [
+      "# Evaluation plan {#plan}",
+      "",
+      "Context stays the same.",
+      "",
+      "## Decision rule {#decision-rule}",
+      "",
+      "The evaluator passes traces by reporting ambiguity separately from failure.",
+      "",
+      "Add one adversarial trial with the expected signal absent.",
+      "",
+    ].join("\n"));
+    const successorResponse = await fetch(`${baseUrl}/api/reviews`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: fixture, predecessorReviewId: first.reviewId }),
+    });
+    const successor = await successorResponse.json() as { reviewId: string };
+    const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+    await page.goto(`${baseUrl}/review/${encodeURIComponent(successor.reviewId)}`);
+    await page.locator("#changeNavigator").waitFor({ state: "visible" });
+
+    expect(await page.locator("#changeSummary").textContent()).toContain("2 changes");
+    expect(await page.locator("html").getAttribute("data-review-mode")).toBe("changes");
+    expect(await page.locator("#railTabs").getAttribute("role")).toBe("group");
+    expect(await page.locator("#changeTab").getAttribute("aria-pressed")).toBe("true");
+    expect(await page.locator("#commentTab").getAttribute("aria-pressed")).toBe("false");
+    expect(await page.locator("#changeCards .change-card").count()).toBe(2);
+    expect(await page.locator('#doc [data-change-active="true"]').textContent()).toContain("reporting ambiguity");
+    await page.waitForFunction(() => {
+      const region = document.querySelector('#doc [data-change-active="true"]');
+      if (!region) return false;
+      const box = region.getBoundingClientRect();
+      return box.bottom > 0 && box.top < innerHeight;
+    });
+    expect(await page.locator("#changeCards").textContent()).toContain("Explain how ambiguity is classified.");
+    expect(await page.locator(".prior-thread .body").isHidden()).toBeTrue();
+    await page.locator(".change-context-link").first().click();
+    expect(await page.locator(".prior-thread .body").isVisible()).toBeTrue();
+    expect(await page.locator("#changeCards .change-jump").first().getAttribute("type")).toBe("button");
+    expect(await page.locator('#doc > [data-bid="b3"]').getAttribute("data-change-kind")).toBe("modified");
+    expect(await page.locator('#doc > [data-bid="b1"]').getAttribute("data-change-stable")).toBe("true");
+    expect(await page.locator(".unchanged-run-toggle").textContent()).toContain("Show 3 unchanged regions");
+    expect(await page.locator('#doc > [data-bid="b1"]').isHidden()).toBeTrue();
+    await page.locator(".unchanged-run-toggle").click();
+    expect(await page.locator('#doc > [data-bid="b1"]').isVisible()).toBeTrue();
+    await page.locator(".unchanged-run-toggle").click();
+    expect(await page.locator('#doc > [data-bid="b1"]').isHidden()).toBeTrue();
+
+    await page.locator("#changeNext").click();
+    expect(await page.locator("#changePosition").textContent()).toBe("2 of 2");
+    expect(await page.locator('#doc [data-change-active="true"]').textContent()).toContain("adversarial trial");
+
+    await page.setViewportSize({ width: 1400, height: 400 });
+    await page.locator('#doc [data-change-active="true"]').evaluate((element) => element.scrollIntoView({ block: "center", behavior: "instant" }));
+    const changeTop = await page.locator('#doc [data-change-active="true"]').evaluate((element) => element.getBoundingClientRect().top);
+    await page.locator("#changeModeToggle").click();
+    expect(await page.locator("html").getAttribute("data-review-mode")).toBe("document");
+    expect(await page.locator("#changeModeToggle").textContent()).toBe("Show changes");
+    expect(Math.abs(await page.locator('#doc [data-change-active="true"]').evaluate((element) => element.getBoundingClientRect().top) - changeTop)).toBeLessThanOrEqual(2);
+    expect(await page.locator('#doc > [data-bid="b1"]').isVisible()).toBeTrue();
+    await page.locator("#changeModeToggle").click();
+    expect(await page.locator("html").getAttribute("data-review-mode")).toBe("changes");
+    expect(await page.locator('#doc > [data-bid="b1"]').isHidden()).toBeTrue();
+
+    await page.route("**/api/changes?*", (route) => route.fulfill({ status: 409, body: "version changed" }), { times: 1 });
+    const failedComparison = page.waitForResponse((response) => response.url().includes("/api/changes?") && response.status() === 409);
+    fs.writeFileSync(fixture, fs.readFileSync(fixture, "utf8").replace("adversarial trial", "adversarial control trial"));
+    await failedComparison;
+    await page.locator("#changeNavigator").waitFor({ state: "hidden" });
+    expect(await page.locator('#doc > [data-change-id]').count()).toBe(0);
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
+  test("a removed rendered region stays in place and its old content is inspectable", async () => {
+    const fixture = path.join(tempDir, "linked-removal-review.md");
+    fs.writeFileSync(fixture, "# Plan {#plan}\n\nKeep this context.\n\nKeep this second context.\n\nLegacy details that must remain inspectable.\n");
+    const first = await (await fetch(`${baseUrl}/api/reviews`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: fixture }),
+    })).json() as { reviewId: string; currentVersion: string };
+    expect((await fetch(`${baseUrl}/api/done`, {
+      method: "POST",
+      body: JSON.stringify({ reviewId: first.reviewId, version: first.currentVersion }),
+    })).status).toBe(200);
+    fs.writeFileSync(fixture, "# Plan {#plan}\n\nKeep this context.\n\nKeep this second context.\n");
+    const successor = await (await fetch(`${baseUrl}/api/reviews`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: fixture, predecessorReviewId: first.reviewId }),
+    })).json() as { reviewId: string };
+
+    const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+    await page.goto(`${baseUrl}/review/${encodeURIComponent(successor.reviewId)}`);
+    const tombstone = page.locator(".change-tombstone");
+    await tombstone.waitFor({ state: "visible" });
+    expect(await tombstone.textContent()).toContain("Removed · Legacy details");
+    expect(await tombstone.locator("pre").isHidden()).toBeTrue();
+    await tombstone.locator("summary").click();
+    expect(await tombstone.locator("pre").textContent()).toBe("Legacy details that must remain inspectable.");
+    const documentText = await page.locator("#doc").textContent() ?? "";
+    expect(documentText.indexOf("Keep this context.")).toBeLessThan(documentText.indexOf("Removed · Legacy details"));
+    expect(await page.locator('#doc > [data-bid="b1"]').isHidden()).toBeTrue();
+    await page.setViewportSize({ width: 1400, height: 300 });
+    await tombstone.evaluate((element) => element.scrollIntoView({ block: "center", behavior: "instant" }));
+    const neighborTop = await page.locator("[data-change-position-anchor]").evaluate((element) => element.getBoundingClientRect().top);
+    await page.locator("#changeModeToggle").click();
+    expect(await tombstone.isHidden()).toBeTrue();
+    expect(await page.locator('#doc > [data-bid="b1"]').isVisible()).toBeTrue();
+    expect(Math.abs(await page.locator("[data-change-position-anchor]").evaluate((element) => element.getBoundingClientRect().top) - neighborTop)).toBeLessThanOrEqual(2);
+    await page.close();
+  }, E2E_TIMEOUT_MS);
+
+  test("a linked review emphasizes the exact changed semantic object", async () => {
+    const fixture = path.join(tempDir, "linked-semantic-review.md");
+    const source = (value: string) => [
+      "# Trial result",
+      "",
+      "```explainer {#result}",
+      "title: Trial",
+      "sections:",
+      "  - type: result",
+      "    id: verdict",
+      "    label: Score",
+      `    value: ${value}`,
+      "    status: measured",
+      "```",
+      "",
+    ].join("\n");
+    fs.writeFileSync(fixture, source("0.68"));
+    const first = await (await fetch(`${baseUrl}/api/reviews`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: fixture }),
+    })).json() as { reviewId: string; currentVersion: string };
+    expect((await fetch(`${baseUrl}/api/done`, {
+      method: "POST",
+      body: JSON.stringify({ reviewId: first.reviewId, version: first.currentVersion }),
+    })).status).toBe(200);
+    fs.writeFileSync(fixture, source("0.73"));
+    const successor = await (await fetch(`${baseUrl}/api/reviews`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: fixture, predecessorReviewId: first.reviewId }),
+    })).json() as { reviewId: string };
+
+    const page = await browser.newPage({ viewport: { width: 900, height: 800 } });
+    await page.goto(`${baseUrl}/review/${encodeURIComponent(successor.reviewId)}`);
+    await page.locator("#changeNavigator").waitFor({ state: "visible" });
+
+    expect(await page.locator('[data-bid="result"]').getAttribute("data-change-kind")).toBe("modified");
+    expect(await page.locator('[data-myd-target="verdict"]').getAttribute("data-semantic-change")).toBe("true");
+    expect(await page.locator("#changeCards").textContent()).toContain("verdict.value");
+    expect(await page.locator("#rail").evaluate((element) => getComputedStyle(element).position)).toBe("fixed");
+    await page.setViewportSize({ width: 520, height: 800 });
+    expect(await page.locator("#changeNavigator").evaluate((element) => getComputedStyle(element).flexWrap)).toBe("nowrap");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(520);
+    await page.close();
+  }, E2E_TIMEOUT_MS);
 });

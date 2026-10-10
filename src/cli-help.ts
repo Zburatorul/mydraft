@@ -32,7 +32,7 @@ const GUARD_RULES = [
 export const COMMANDS: Record<string, CommandHelp> = {
   view: {
     group: "review",
-    syntax: "<file.md> [--wait] [--timeout S] [--no-open] [--session ID] [--skip-check]",
+    syntax: "<file.md> [--wait] [--timeout S] [--no-open] [--session ID] [--from-review [ID]] [--skip-check]",
     summary: "open a review in the viewer; returns immediately unless --wait",
     detail:
       "Creates a review, prints its URL, and locally opens a desktop browser. The default is\n" +
@@ -44,6 +44,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
       ["--timeout S", "seconds to block with --wait (default 1800; 0 = no limit)"],
       ["--no-open", "never launch a desktop browser; the URL is still printed"],
       ["--session ID", "scope the review to one caller (default: $MYD_SESSION, else $CLAUDE_CODE_SESSION_ID)"],
+      ["--from-review [ID]", "open a change-focused successor of a completed review (default: this file's latest)"],
       ["--skip-check", "open the review without the structural preflight"],
       JSON_FLAG,
     ],

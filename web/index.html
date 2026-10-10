@@ -24,9 +24,26 @@
   </button>
   <button id="doneBtn" class="primary">Done Reviewing</button>
 </header>
+<section id="changeNavigator" class="change-navigator" aria-label="Review changes" hidden>
+  <strong id="changeSummary"></strong>
+  <span class="spacer"></span>
+  <button id="changePrevious" type="button" aria-label="Previous change">←</button>
+  <span id="changePosition" aria-live="polite"></span>
+  <button id="changeNext" type="button" aria-label="Next change">→</button>
+  <button id="changeModeToggle" type="button">Full document</button>
+  <button id="changeSourceDiff" type="button">View source diff</button>
+</section>
 <main>
   <article id="doc" class="markdown-body"></article>
-  <aside id="rail"><h3>Comments <span id="count"></span></h3><div id="threads"></div></aside>
+  <aside id="rail">
+    <div id="railTabs" class="rail-tabs" role="group" aria-label="Review panel view" hidden>
+      <button id="changeTab" type="button" aria-pressed="false">Changes <span id="changeCount"></span></button>
+      <button id="commentTab" type="button" aria-pressed="true">Comments <span id="count"></span></button>
+    </div>
+    <h3 id="commentsHeading">Comments <span id="countFallback"></span></h3>
+    <div id="changeCards" hidden></div>
+    <div id="threads"></div>
+  </aside>
 </main>
 <div id="popover" hidden>
   <button data-act="comment">💬 Comment</button>

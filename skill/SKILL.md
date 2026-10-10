@@ -21,7 +21,7 @@ myd view "/abs/doc.md"                    # elsewhere: tell the user, end the tu
 myd comments "/abs/doc.md"                # when you resume: pending items, each with its block's guard
 myd reply FILE c3 "…"  ·  myd resolve FILE c3 [--summary "…"]
 myd set-block FILE --target-guard G --file new.md    # edit the block a comment points at
-myd view "/abs/doc.md" ...                # hand back the same way, end the turn
+myd view "/abs/doc.md" ... --from-review  # after Done: hand back showing changes since that review
 ```
 
 Never poll a background wait; ignore one that reports its review was replaced.
@@ -33,7 +33,7 @@ Never poll a background wait; ignore one that reports its review was replaced.
 | Situation | Do this |
 |---|---|
 | One localized change, or the document still carries review markup | Guarded op: `myd set-block` / `insert` (`--target-guard` from `myd comments` or one `myd blocks --json` listing), `myd set-object` for explainer objects. Batch many edits from **one** listing; never refresh a guard right before writing. |
-| Completed review, and the revision is multi-block or structural (best written as one patch) | Clean revision: `cp doc.md doc.v1.md` (keeps the review's history), write the new Markdown fresh with no CriticMarkup or endmatter, `myd check doc.md`, optionally `myd diff doc.v1.md doc.md doc.diff.md`, then `myd view` the result as a new review. |
+| Completed review, and the revision is multi-block or structural (best written as one patch) | Clean revision: write the new Markdown fresh with no CriticMarkup or endmatter, `myd check doc.md`, then `myd view doc.md --from-review`; it opens in Changes mode against the completed review, whose snapshot myd keeps. |
 
 Name blocks you will revisit: `## Title {#name}`, ```` ```explainer {#name} ````.
 
