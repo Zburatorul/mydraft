@@ -5,27 +5,50 @@ description: Review, annotate, and discuss Markdown documents with the user thro
 
 # myd — human–agent document review
 
-When the user wants to review, comment on, or discuss a Markdown file (plans, research notes, explainers), use `myd` (on PATH via `myd install-prompt`; it runs from the mydraft checkout that `readlink -f "$(command -v myd)"` points into). When asked for a plan or a design, write it as a Markdown file on disk first, then hand it over:
+## Mental model
+
+- **Markdown is canonical; myd is the review transport.** The file on disk is the document. Comments and replies live inside it as CriticMarkup plus endmatter — never hand-edit either.
+- **Handoff is asynchronous.** Open a review, end your turn, never poll.
+- **Read before you write.** The next turn starts with `myd comments`.
+- **A completed review is history.** Once the user clicks Done, revise and open the result as a *new* review; do not keep mutating the old one.
+- **In a live review, reply before you replace.** Answer a comment in its thread before rewriting the text it is anchored to.
+
+## Core loop
 
 ```bash
-myd view "/abs/file.md"            # open the viewer, return immediately, then end this agent turn
-myd comments "/abs/file.md"        # next turn: read what the user left, in document order
-myd reply FILE c3 "…"  /  myd resolve FILE c3 [--summary "…"]
-myd view FILE --from-review REVIEW_ID  # clean revision with review-relative changes
+myd view "/abs/doc.md" --wait --timeout 0  # Claude Code, run in the background: Done wakes you
+myd view "/abs/doc.md"                    # elsewhere: tell the user, end the turn
+myd comments "/abs/doc.md"                # when you resume: pending items, each with its block's guard
+myd reply FILE c3 "…"  ·  myd resolve FILE c3 [--summary "…"]
+myd set-block FILE --target-guard G --file new.md    # edit the block a comment points at
+myd view "/abs/doc.md" ... --from-review  # after Done: hand back showing changes since that review
 ```
 
-Use an **asynchronous handoff by default**. After `myd view FILE` opens the connected review tab, tell the user to return in chat when finished and end the turn. Do not poll the CLI, emit periodic “still waiting” updates, or spend agent turns watching an idle review. The viewer/server continue independently.
+Never poll a background wait; ignore one that reports its review was replaced.
 
-When the user returns, run **`myd comments FILE` first**; never guess ids or hand-edit `{>>…<<}` markers/YAML endmatter. Answer with `myd reply`, apply suggestions with block operations, and `myd resolve` handled items. If only the user can answer, reply with the question in-thread, reopen with nonblocking `myd view FILE`, and end the turn. Only items explicitly printed as `[note — document-level, from Done Reviewing]` are overall Done notes; read but do not reply to or resolve them. An inline-anchored item is printed as `[comment]` and should be handled normally even if its prose sounds like an overall note. If a claim cannot be verified, ask in-thread or soften/remove it—never invent evidence.
+`[note — document-level, from Done Reviewing]` items are read-only: act on them, never reply or resolve. If only the user can answer, ask in the thread and hand back.
 
-For a clean revision after Done Reviewing, reuse the completed `reviewId` from `myd view --json`: `myd view FILE --from-review REVIEW_ID`. The successor opens in a rendered Changes mode with prior feedback attached to affected regions. Do not use `--from-review` for an unrelated review.
+## Choosing how to revise
 
-Use `myd view FILE --wait --timeout N` only when the user explicitly asks for synchronous waiting **and** the execution runtime can block without polling. Never exceed 1800 seconds. If the command yields and continued waiting would require repeated polls or idle commentary, terminate only the waiter and switch to the asynchronous handoff; the detached server and browser tab remain usable.
+| Situation | Do this |
+|---|---|
+| One localized change, or the document still carries review markup | Guarded op: `myd set-block` / `insert` (`--target-guard` from `myd comments` or one `myd blocks --json` listing), `myd set-object` for explainer objects. Batch many edits from **one** listing; never refresh a guard right before writing. |
+| Completed review, and the revision is multi-block or structural (best written as one patch) | Clean revision: write the new Markdown fresh with no CriticMarkup or endmatter, `myd check doc.md`, then `myd view doc.md --from-review`; it opens in Changes mode against the completed review, whose snapshot myd keeps. |
 
-The viewer renders GFM, KaTeX, Shiki code, `> [!NOTE]` callouts, and ```` ```mermaid ````, ```` ```vega-lite ````, ```` ```explainer ````, ```` ```html ```` (sandboxed) fences — prefer these over ASCII diagrams/tables. Users can annotate selected text, whole blocks, and semantic diagram/explainer objects; object comments show as `@block›target` in `myd comments`, and every anchored item carries its block's guard (`anchor.guard` in `--json`) — pass it straight to `myd set-block FILE --target-guard G` to edit the commented block without any positional id. Edit ordinary Markdown by block. For an authored name, use `myd blocks --json` → capture `version` → `myd set-block ... --version VERSION`. For unnamed blocks, address by content: `--target-guard GUARD` (or `bN --expect GUARD`) with guards from one planning listing — a batch then needs no `--version`, no re-listing, and applies in any order. Never refresh a guard right before the write; that re-targets whatever shifted into the position. For a native explainer, use `myd objects | object | set-object` so one stable object can change without regenerating the fence. Name blocks you'll revisit: `## Title {#name}` / ```` ```explainer {#name} ````.
+Name blocks you will revisit: `## Title {#name}`, ```` ```explainer {#name} ````.
 
-Before doing anything non-trivial with myd, run `myd help` (command index), `myd help <command>` (that command's flags, guards, defaults and one example) or `myd guide <topic>` — topics: `workflow blocks objects explainers rich criticmarkup export api remote`. **Plan a batch from one `myd blocks --json` listing and pass each block's guard as `--target-guard`; never re-read a guard just before writing.** Use `myd block FILE ID --json` when you need the full source before replacement. `myd guide objects` is the annotation inventory; `myd guide explainers` explains when to use the small native catalog and how to patch it surgically. Do not force content into an explainer type that does not fit. `myd view` runs a browserless structural check first and refuses to open a document that would render broken (`--skip-check` overrides); run `myd check FILE` yourself for the same check on demand. `myd export FILE` makes a single self-contained HTML; `myd shot FILE out.png` screenshots the rendering so you can check it — the check is structural, so `shot` remains the only way to see layout, clipping and final pixels. Fallback if myd is broken: `bin/rd-open FILE` (Roughdraft) in that same checkout — the `myd` launcher resolves to `<checkout>/src/cli.ts`, and the managed block in CLAUDE.md/AGENTS.md names `<checkout>/docs/prompt.md`.
+## Go deeper only when needed
 
-## Deeper reference
+`myd help <command>` gives exact flags and guards. `myd guide <topic>` (same text as `references/agent-guide.md`) covers:
 
-`references/agent-guide.md` (same as `myd guide`): sections `workflow`, `blocks`, `objects` (the annotation inventory), `explainers` (selection, composition, and surgical editing), `rich`, `criticmarkup` (on-disk format), `export`, `api`, `remote`. Read the section you need before doing block or semantic-object edits, interpreting object comments, or hand-editing CriticMarkup.
+- `workflow`: the background `--wait` handoff, reading comment output, and verifying renders with `check` and `shot`.
+- `blocks`: guards, batches, `--dry-run`.
+- `objects`: what can be commented on.
+- `explainers`: native semantic objects.
+- `rich`: which fences render.
+- `criticmarkup`: the on-disk format.
+- `export`: self-contained HTML.
+- `api`
+- `remote`
+
+Load the topic before an operation it covers.

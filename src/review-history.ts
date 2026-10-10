@@ -77,6 +77,16 @@ export class ReviewHistory {
     return archive ? { ...archive, revision: archive.revision ? { ...archive.revision } : null } : null;
   }
 
+  /** The most recently completed review of a document: the predecessor a successor gets when
+   *  its caller names none, so an agent need not carry a review id across turns. */
+  latestFor(path: string): ArchivedReview | null {
+    let latest: ArchivedReview | undefined;
+    for (const archive of this.archives.values()) {
+      if (archive.path === path && (!latest || archive.completedAt > latest.completedAt)) latest = archive;
+    }
+    return latest ? this.archive(latest.reviewId) : null;
+  }
+
   predecessor(reviewId: string): string | null {
     return this.predecessors.get(reviewId) ?? null;
   }

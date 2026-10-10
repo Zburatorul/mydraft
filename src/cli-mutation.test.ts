@@ -164,16 +164,69 @@ describe("CLI document mutation seam", () => {
     expect(fs.readFileSync(file, "utf8")).toBe("# Title\n\nAlpha one.\n\nAlpha two.\n\nAlpha three.\n\nBeta replaced.\n\nGamma replaced.\n\nDelta replaced.\n");
   });
 
-  test("a content guard fails loudly once its block was edited, and duplicate blocks keep distinct guards", async () => {
+  test("a content guard fails loudly once its block was edited", async () => {
     const file = fixture();
-    fs.writeFileSync(file, "# Title\n\nSame.\n\nSame.\n");
+    fs.writeFileSync(file, "# Title\n\nAlpha.\n\nBeta.\n");
     const plan = JSON.parse((await myd(null, "blocks", file, "--json")).stdout);
-    expect(plan.blocks[1].guard).not.toBe(plan.blocks[2].guard);
     expect((await myd("Edited.", "set-block", file, "b2", "--expect", plan.blocks[2].guard)).exitCode).toBe(0);
     const gone = await myd("Again.", "set-block", file, "--target-guard", plan.blocks[2].guard);
     expect(gone.exitCode).toBe(1);
     expect(gone.stderr).toContain("no block carries guard");
+    expect(fs.readFileSync(file, "utf8")).toBe("# Title\n\nAlpha.\n\nEdited.\n");
+  });
+
+  test("identical blocks share a guard, and a guard matching several blocks is refused", async () => {
+    const file = fixture();
+    fs.writeFileSync(file, "# Title\n\nSame.\n\nSame.\n");
+    const plan = JSON.parse((await myd(null, "blocks", file, "--json")).stdout);
+    expect(plan.blocks[1].guard).toBe(plan.blocks[2].guard);
+    const before = fs.readFileSync(file, "utf8");
+    for (const args of [["--target-guard", plan.blocks[2].guard], ["b2", "--expect", plan.blocks[2].guard]]) {
+      const refused = await myd("Edited.", "set-block", file, ...args);
+      expect(refused.exitCode).toBe(1);
+      expect(refused.stderr).toContain("matches 2 identical blocks (b1, b2)");
+    }
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+    expect((await myd("Edited.", "set-block", file, "b2", "--expect", plan.blocks[2].guard, "--version", plan.version)).exitCode).toBe(0);
     expect(fs.readFileSync(file, "utf8")).toBe("# Title\n\nSame.\n\nEdited.\n");
+  });
+
+  test("an edit that duplicates a planned block cannot redirect that block's guard (review of #34)", async () => {
+    const file = fixture();
+    fs.writeFileSync(file, "# T\n\nAlpha para.\n\nBeta para.\n\nGamma para.\n");
+    const plan = JSON.parse((await myd(null, "blocks", file, "--json")).stdout);
+    expect((await myd("Beta para.", "set-block", file, "b1", "--expect", plan.blocks[1].guard)).exitCode).toBe(0);
+    const before = fs.readFileSync(file, "utf8");
+    const redirected = await myd("REPLACED", "set-block", file, "--target-guard", plan.blocks[2].guard);
+    expect(redirected.exitCode).toBe(1);
+    expect(redirected.stderr).toContain("identical blocks");
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+  });
+
+  test("a block ending in review markup includes it, so edits never split the annotation (review of #34)", async () => {
+    const file = fixture();
+    const source = "# T\n\nFirst para here.\n\nSecond para {==end==}{>>note<<}{#c1}\n\nThird para.\n\n---\ncomments:\n  c1:\n    by: user\n";
+    fs.writeFileSync(file, source);
+    const listing = JSON.parse((await myd(null, "blocks", file, "--json")).stdout);
+    expect(JSON.parse((await myd(null, "block", file, "b2", "--json")).stdout).source).toBe("Second para {==end==}{>>note<<}{#c1}");
+    expect((await myd("Inserted.", "insert", file, "b2", "--expect", listing.blocks[2].guard)).exitCode).toBe(0);
+    expect(fs.readFileSync(file, "utf8")).toContain("Second para {==end==}{>>note<<}{#c1}\n\nInserted.\n\nThird para.");
+    fs.writeFileSync(file, source);
+    expect((await myd("NEW", "set-block", file, "b2", "--expect", listing.blocks[2].guard)).exitCode).toBe(0);
+    expect(fs.readFileSync(file, "utf8")).toStartWith("# T\n\nFirst para here.\n\nNEW\n\nThird para.\n");
+  });
+
+  test("a document whose body ends in review markup keeps that markup inside its last block", async () => {
+    const file = fixture();
+    fs.writeFileSync(file, "Only {==end==}{>>x<<}{#c1}");
+    expect(JSON.parse((await myd(null, "block", file, "b0", "--json")).stdout).source).toBe("Only {==end==}{>>x<<}{#c1}");
+  });
+
+  test("a guard flag without a value is rejected instead of read as the string true", async () => {
+    const file = fixture();
+    const result = await myd("x", "set-block", file, "b1", "--expect");
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("--expect needs a guard value");
   });
 
   test("a supplied --version is still enforced alongside a content guard", async () => {

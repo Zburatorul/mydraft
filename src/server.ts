@@ -2,6 +2,9 @@
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { WebSocketServer, type WebSocket } from "ws";
 import { loadDoc, annotateObject, reply, resolve, type Doc } from "./doc.ts";
 import { renderDoc, topBlocks } from "./render.ts";
 import { ReviewTracker, type ReviewRecord, type ReviewSnapshot } from "./review-tracker.ts";
@@ -13,10 +16,10 @@ import { normalizePublicOrigin } from "./public-url.ts";
 import { DocumentHandles } from "./document-handles.ts";
 import { revisionDiff } from "./revision-diff.ts";
 import { ReviewHistory, type ReviewHistorySnapshot } from "./review-history.ts";
+import { vendorFile } from "./package-dir.ts";
 
-const ROOT = path.resolve(import.meta.dir, "..");
+const ROOT = path.resolve(import.meta.dirname, "..");
 const WEB = path.join(ROOT, "web");
-const NM = path.join(ROOT, "node_modules");
 export const STATE_DIR = process.env.MYD_HOME ?? path.join(os.homedir(), ".mydraft"); // MYD_HOME + MYD_PORT → an isolated instance (used by eval)
 export const STATE_FILE = path.join(STATE_DIR, "server.json");
 export const REVISION_FILE = path.join(STATE_DIR, "revisions.json");
@@ -24,8 +27,9 @@ export const REVIEW_FILE = path.join(STATE_DIR, "reviews.json");
 export const REVIEW_HISTORY_FILE = path.join(STATE_DIR, "review-history.json");
 
 type Client = { path: string; reviewId: string | null; inbox?: boolean };
-const topics = new Map<string, Set<any>>(); // abs path → sockets
-const inboxSockets = new Set<any>(); // the inbox spans every document, so it cannot live in `topics`
+type Socket = WebSocket & { data: Client };
+const topics = new Map<string, Set<Socket>>(); // abs path → sockets
+const inboxSockets = new Set<Socket>(); // the inbox spans every document, so it cannot live in `topics`
 const watchers = new Map<string, fs.FSWatcher>();
 const doneLog: Array<{ path: string; at: string; note?: string }> = [];
 const documentHandles = new DocumentHandles();
@@ -74,7 +78,7 @@ function notifyInbox() {
 }
 function ensureWatch(abs: string) {
   if (watchers.has(abs)) return;
-  let t: Timer | null = null;
+  let t: ReturnType<typeof setTimeout> | null = null;
   const dir = path.dirname(abs);
   const basename = path.basename(abs);
   const w = fs.watch(dir, (_event, filename) => {
@@ -153,282 +157,357 @@ const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javasc
 function serveFile(base: string, rel: string) {
   const abs = path.normalize(path.join(base, rel));
   if (!abs.startsWith(base) || !fs.existsSync(abs) || fs.statSync(abs).isDirectory()) return new Response("not found", { status: 404 });
-  return new Response(Bun.file(abs), { headers: { "content-type": MIME[path.extname(abs)] ?? "application/octet-stream" } });
+  return new Response(fs.readFileSync(abs), { headers: { "content-type": MIME[path.extname(abs)] ?? "application/octet-stream" } });
 }
 
-export function startServer(port = 7474, options: { publicUrl?: string | null } = {}) {
+async function toRequest(req: http.IncomingMessage): Promise<Request> {
+  const headers = new Headers();
+  for (let i = 0; i < req.rawHeaders.length; i += 2) headers.append(req.rawHeaders[i]!, req.rawHeaders[i + 1]!);
+  const chunks: Buffer[] = [];
+  if (req.method !== "GET" && req.method !== "HEAD") for await (const chunk of req) chunks.push(chunk as Buffer);
+  return new Request(`http://${req.headers.host ?? "localhost"}${req.url ?? "/"}`, { method: req.method, headers, body: chunks.length ? Buffer.concat(chunks) : undefined });
+}
+async function sendResponse(res: http.ServerResponse, response: Response, head: boolean) {
+  const body = head ? undefined : Buffer.from(await response.arrayBuffer());
+  res.writeHead(response.status, Object.fromEntries(response.headers));
+  res.end(body);
+}
+
+/** Plain node:http + ws, so the published package runs on Node as well as Bun. */
+export async function startServer(port = 7474, options: { publicUrl?: string | null } = {}) {
   // Remote review is a property of the deployment, not of a single command: whoever
   // starts the server records the origin, and every later `myd view` reads it back.
   const publicOrigin = normalizePublicOrigin(options.publicUrl ?? process.env.MYD_PUBLIC_URL ?? null);
-  const server = Bun.serve<Client>({
-    port,
-    async fetch(req, srv) {
-      const url = new URL(req.url);
-      const p = url.pathname;
-      try {
-        // A `doc` handle stands in for a path so the URL carries no filesystem text.
-        // Resolving it here means every route that already reads `path` keeps working.
-        const handle = url.searchParams.get("doc");
-        if (handle) {
-          const handled = documentHandles.pathFor(handle);
-          if (!handled) return json({ error: "Unknown document handle; render it again." }, 404);
-          url.searchParams.set("path", handled);
-        }
-        if (req.method === "POST" && p === "/api/handles") {
-          const body = await req.json();
-          if (typeof body.path !== "string" || !body.path.trim()) return json({ error: "A document path is required." }, 400);
-          return json({ handle: documentHandles.for(path.resolve(body.path)) }, 200);
-        }
-        if (p === "/ws") {
-          // The inbox watches every review at once, so it subscribes without a document.
-          if (url.searchParams.get("inbox")) {
-            if (srv.upgrade(req, { data: { path: "", reviewId: null, inbox: true } })) return undefined as any;
-            return new Response("upgrade failed", { status: 400 });
-          }
-          const reviewId = url.searchParams.get("review");
-          const docPath = path.resolve(requestedDocumentPath(url.searchParams.get("path"), reviewId));
-          if (srv.upgrade(req, { data: { path: docPath, reviewId } })) return undefined as any;
+  type Upgrader = { upgrade(req: Request, options: { data: Client }): boolean };
+  async function handle(req: Request, srv: Upgrader): Promise<Response> {
+    const url = new URL(req.url);
+    const p = url.pathname;
+    try {
+      // A `doc` handle stands in for a path so the URL carries no filesystem text.
+      // Resolving it here means every route that already reads `path` keeps working.
+      const handle = url.searchParams.get("doc");
+      if (handle) {
+        const handled = documentHandles.pathFor(handle);
+        if (!handled) return json({ error: "Unknown document handle; render it again." }, 404);
+        url.searchParams.set("path", handled);
+      }
+      if (req.method === "POST" && p === "/api/handles") {
+        const body = await req.json();
+        if (typeof body.path !== "string" || !body.path.trim()) return json({ error: "A document path is required." }, 400);
+        return json({ handle: documentHandles.for(path.resolve(body.path)) }, 200);
+      }
+      if (p === "/ws") {
+        // The inbox watches every review at once, so it subscribes without a document.
+        if (url.searchParams.get("inbox")) {
+          if (srv.upgrade(req, { data: { path: "", reviewId: null, inbox: true } })) return undefined as any;
           return new Response("upgrade failed", { status: 400 });
         }
-        // A bare root is the inbox; `/?path=…` and `/?review=…` stay the viewer for saved links.
-        if (p === "/") return serveFile(WEB, url.searchParams.get("path") || url.searchParams.get("review") ? "index.html" : "inbox.html");
-        if (p === "/index.html") return serveFile(WEB, "index.html");
-        if (p === "/inbox" || p === "/inbox.html") return serveFile(WEB, "inbox.html");
-        const reviewRoute = /^\/review\/([^/]+)$/.exec(p);
-        if (reviewRoute) {
-          requireReview(decodeURIComponent(reviewRoute[1]!));
-          return serveFile(WEB, "index.html");
-        }
-        if (p.startsWith("/web/")) return serveFile(WEB, p.slice(5));
-        if (p.startsWith("/vendor/")) return serveFile(NM, p.slice(8));
-        if (p === "/api/health") return json({ ok: true, pid: process.pid, port }, 200);
-        // Reviews of one document now coexist, so a path filter alone cannot tell an agent
-        // whether the Done it is catching up on belongs to its own review; `review` can.
-        if (p === "/api/done-events") { const rid = url.searchParams.get("review"); const dp = url.searchParams.get("path"); const f = path.join(STATE_DIR, "done.log"); const evs = fs.existsSync(f) ? fs.readFileSync(f, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []; return json(evs.filter((e) => (!rid || e.reviewId === rid) && (!dp || e.path === path.resolve(dp))), 200); }
+        const reviewId = url.searchParams.get("review");
+        const docPath = path.resolve(requestedDocumentPath(url.searchParams.get("path"), reviewId));
+        if (srv.upgrade(req, { data: { path: docPath, reviewId } })) return undefined as any;
+        return new Response("upgrade failed", { status: 400 });
+      }
+      // A bare root is the inbox; `/?path=…` and `/?review=…` stay the viewer for saved links.
+      if (p === "/") return serveFile(WEB, url.searchParams.get("path") || url.searchParams.get("review") ? "index.html" : "inbox.html");
+      if (p === "/index.html") return serveFile(WEB, "index.html");
+      if (p === "/inbox" || p === "/inbox.html") return serveFile(WEB, "inbox.html");
+      const reviewRoute = /^\/review\/([^/]+)$/.exec(p);
+      if (reviewRoute) {
+        requireReview(decodeURIComponent(reviewRoute[1]!));
+        return serveFile(WEB, "index.html");
+      }
+      if (p.startsWith("/web/")) return serveFile(WEB, p.slice(5));
+      if (p.startsWith("/vendor/")) { const v = vendorFile(p.slice(8)); return v ? serveFile(v.base, v.file) : new Response("not found", { status: 404 }); }
+      if (p === "/api/health") return json({ ok: true, pid: process.pid, port }, 200);
+      // Reviews of one document now coexist, so a path filter alone cannot tell an agent
+      // whether the Done it is catching up on belongs to its own review; `review` can.
+      if (p === "/api/done-events") { const rid = url.searchParams.get("review"); const dp = url.searchParams.get("path"); const f = path.join(STATE_DIR, "done.log"); const evs = fs.existsSync(f) ? fs.readFileSync(f, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []; return json(evs.filter((e) => (!rid || e.reviewId === rid) && (!dp || e.path === path.resolve(dp))), 200); }
 
-        if (req.method === "POST" && (p === "/api/reviews" || p === "/api/track")) {
-          const b = await req.json();
-          const doc = readDocFor(b.path, b.reviewId);
-          const predecessorReviewId = typeof b.predecessorReviewId === "string" && b.predecessorReviewId ? b.predecessorReviewId : null;
-          if (predecessorReviewId) {
-            const predecessor = reviewHistory.archive(predecessorReviewId);
-            if (!predecessor) throw Object.assign(new Error("Predecessor review has no completed snapshot."), { status: 409 });
-            if (predecessor.path !== doc.path) throw Object.assign(new Error("Predecessor review belongs to a different document."), { status: 409 });
-          }
-          ensureWatch(doc.path);
-          const status = reviewTracker.track(doc.path, doc.version, {
-            title: typeof b.title === "string" ? b.title : undefined,
-            context: b.context && typeof b.context === "object" ? b.context : undefined,
-          });
-          if (predecessorReviewId) reviewHistory.link({ reviewId: status.reviewId, predecessorReviewId, path: doc.path });
-          broadcast(doc.path, { type: "tracking-changed" });
-          notifyInbox();
-          return json({ ...status, review: publicReview(reviewTracker.get(status.reviewId)!), revision: revisionTracker.current(doc.path) }, p === "/api/reviews" ? 201 : 200);
+      if (req.method === "POST" && (p === "/api/reviews" || p === "/api/track")) {
+        const b = await req.json();
+        // A completed review reads as its frozen snapshot, so tracking one would pin the new review to
+        // stale content and every edit in it would fail as superseded. Successors are opened by path.
+        if (typeof b.reviewId === "string" && reviewHistory.archive(b.reviewId)) {
+          throw Object.assign(new Error("That review is completed; open a new review of its document by path."), { status: 409 });
         }
-        if (req.method === "GET" && p === "/api/inbox") {
-          const requested = url.searchParams.getAll("status").flatMap((v) => v.split(",")).map((v) => v.trim()).filter(Boolean);
-          const unknown = requested.filter((v) => !["active", "superseded", "completed", "archived"].includes(v));
-          if (unknown.length) return json({ error: `Unknown review status: ${unknown.join(", ")}` }, 400);
-          return json({ rows: buildInbox(requested.length ? requested : null) }, 200);
+        const doc = readDocFor(b.path, b.reviewId);
+        let predecessorReviewId = typeof b.predecessorReviewId === "string" && b.predecessorReviewId ? b.predecessorReviewId : null;
+        if (!predecessorReviewId && b.fromLatestReview === true) {
+          predecessorReviewId = reviewHistory.latestFor(doc.path)?.reviewId ?? null;
+          if (!predecessorReviewId) throw Object.assign(new Error("This document has no completed review to compare against."), { status: 409 });
         }
-        if (req.method === "GET" && p === "/api/reviews") {
-          const requestedStatus = url.searchParams.get("status");
-          if (requestedStatus && !["active", "superseded", "completed", "archived"].includes(requestedStatus)) {
-            return json({ error: `Unknown review status: ${requestedStatus}` }, 400);
-          }
-          return json({ reviews: reviewTracker.list(requestedStatus as ReviewRecord["status"] | undefined).map(publicReview) }, 200);
+        if (predecessorReviewId) {
+          const predecessor = reviewHistory.archive(predecessorReviewId);
+          if (!predecessor) throw Object.assign(new Error("Predecessor review has no completed snapshot."), { status: 409 });
+          if (predecessor.path !== doc.path) throw Object.assign(new Error("Predecessor review belongs to a different document."), { status: 409 });
         }
-        const reviewApiRoute = /^\/api\/reviews\/([^/]+)$/.exec(p);
-        if (req.method === "GET" && reviewApiRoute) {
-          const review = requireReview(decodeURIComponent(reviewApiRoute[1]!));
-          return json({ review: publicReview(review), revision: revisionTracker.current(review.path) }, 200);
+        ensureWatch(doc.path);
+        const status = reviewTracker.track(doc.path, doc.version, {
+          title: typeof b.title === "string" ? b.title : undefined,
+          context: b.context && typeof b.context === "object" ? b.context : undefined,
+        });
+        if (predecessorReviewId) reviewHistory.link({ reviewId: status.reviewId, predecessorReviewId, path: doc.path });
+        broadcast(doc.path, { type: "tracking-changed" });
+        notifyInbox();
+        return json({ ...status, review: publicReview(reviewTracker.get(status.reviewId)!), revision: revisionTracker.current(doc.path) }, p === "/api/reviews" ? 201 : 200);
+      }
+      if (req.method === "GET" && p === "/api/inbox") {
+        const requested = url.searchParams.getAll("status").flatMap((v) => v.split(",")).map((v) => v.trim()).filter(Boolean);
+        const unknown = requested.filter((v) => !["active", "superseded", "completed", "archived"].includes(v));
+        if (unknown.length) return json({ error: `Unknown review status: ${unknown.join(", ")}` }, 400);
+        return json({ rows: buildInbox(requested.length ? requested : null) }, 200);
+      }
+      if (req.method === "GET" && p === "/api/reviews") {
+        const requestedStatus = url.searchParams.get("status");
+        if (requestedStatus && !["active", "superseded", "completed", "archived"].includes(requestedStatus)) {
+          return json({ error: `Unknown review status: ${requestedStatus}` }, 400);
         }
-        const archiveRoute = /^\/api\/reviews\/([^/]+)\/archive$/.exec(p);
-        if (req.method === "POST" && archiveRoute) {
-          const review = reviewTracker.archive(decodeURIComponent(archiveRoute[1]!));
-          if (!review) return json({ error: "Review not found." }, 404);
-          broadcast(review.path, { type: "tracking-changed" });
-          notifyInbox();
-          return json({ review: publicReview(review) }, 200);
-        }
-        if (p === "/api/tracking") {
-          const reviewId = url.searchParams.get("review");
-          const docPath = path.resolve(requestedDocumentPath(url.searchParams.get("path"), reviewId));
-          const status = reviewTracker.status(docPath, reviewId, url.searchParams.get("version"));
-          return json({ ...status, revision: revisionTracker.current(docPath) }, 200);
-        }
+        return json({ reviews: reviewTracker.list(requestedStatus as ReviewRecord["status"] | undefined).map(publicReview) }, 200);
+      }
+      const reviewApiRoute = /^\/api\/reviews\/([^/]+)$/.exec(p);
+      if (req.method === "GET" && reviewApiRoute) {
+        const review = requireReview(decodeURIComponent(reviewApiRoute[1]!));
+        return json({ review: publicReview(review), revision: revisionTracker.current(review.path) }, 200);
+      }
+      const archiveRoute = /^\/api\/reviews\/([^/]+)\/archive$/.exec(p);
+      if (req.method === "POST" && archiveRoute) {
+        const review = reviewTracker.archive(decodeURIComponent(archiveRoute[1]!));
+        if (!review) return json({ error: "Review not found." }, 404);
+        broadcast(review.path, { type: "tracking-changed" });
+        notifyInbox();
+        return json({ review: publicReview(review) }, 200);
+      }
+      if (p === "/api/tracking") {
+        const reviewId = url.searchParams.get("review");
+        const docPath = path.resolve(requestedDocumentPath(url.searchParams.get("path"), reviewId));
+        const status = reviewTracker.status(docPath, reviewId, url.searchParams.get("version"));
+        return json({ ...status, revision: revisionTracker.current(docPath) }, 200);
+      }
 
-        if (p === "/api/doc") {
-          const doc = readDocFor(url.searchParams.get("path"), url.searchParams.get("review"));
-          ensureWatch(doc.path);
-          if (req.headers.get("accept")?.includes("text/markdown")) return new Response(doc.source, { headers: { "content-type": "text/markdown" } });
-          const html = await renderDoc(doc);
-          const byPath = !url.searchParams.get("review") && !!url.searchParams.get("path");
-          const reviewId = url.searchParams.get("review");
-          const archived = reviewId ? reviewHistory.archive(reviewId) : null;
-          const reviewComparison = reviewId && !archived ? reviewHistory.comparison(reviewId, doc.source) : null;
-          const latestComparison = revisionTracker.comparison(doc.path);
-          return json({
-            ...(byPath ? { path: doc.path } : {}),
-            name: path.basename(doc.path),
-            version: doc.version,
-            revision: archived?.revision ?? revisionTracker.current(doc.path),
-            previousRevision: archived ? null : revisionTracker.previous(doc.path),
-            comparison: reviewComparison ? {
-              predecessorReviewId: reviewComparison.predecessorReviewId,
-              changeCount: reviewComparison.changeSet.changes.length,
-            } : null,
-            changesAvailable: reviewComparison !== null || (!archived && latestComparison !== null),
-            html,
-            items: doc.items,
-            cleanLength: doc.clean.length,
-          }, 200);
+      if (p === "/api/doc") {
+        const doc = readDocFor(url.searchParams.get("path"), url.searchParams.get("review"));
+        ensureWatch(doc.path);
+        if (req.headers.get("accept")?.includes("text/markdown")) return new Response(doc.source, { headers: { "content-type": "text/markdown" } });
+        const html = await renderDoc(doc);
+        const byPath = !url.searchParams.get("review") && !!url.searchParams.get("path");
+        const reviewId = url.searchParams.get("review");
+        const archived = reviewId ? reviewHistory.archive(reviewId) : null;
+        const reviewComparison = reviewId && !archived ? reviewHistory.comparison(reviewId, doc.source) : null;
+        const latestComparison = revisionTracker.comparison(doc.path);
+        return json({
+          ...(byPath ? { path: doc.path } : {}),
+          name: path.basename(doc.path),
+          version: doc.version,
+          revision: archived?.revision ?? revisionTracker.current(doc.path),
+          previousRevision: archived ? null : revisionTracker.previous(doc.path),
+          comparison: reviewComparison ? {
+            predecessorReviewId: reviewComparison.predecessorReviewId,
+            changeCount: reviewComparison.changeSet.changes.length,
+          } : null,
+          changesAvailable: reviewComparison !== null || (!archived && latestComparison !== null),
+          html,
+          items: doc.items,
+          cleanLength: doc.clean.length,
+        }, 200);
+      }
+      if (p === "/api/changes") {
+        const doc = readDocFor(url.searchParams.get("path"), url.searchParams.get("review"));
+        const expectedVersion = url.searchParams.get("version");
+        if (expectedVersion && expectedVersion !== doc.version) {
+          return json({ error: "Document changed before its comparison was loaded.", currentVersion: doc.version }, 409);
         }
-        if (p === "/api/changes") {
-          const doc = readDocFor(url.searchParams.get("path"), url.searchParams.get("review"));
-          const expectedVersion = url.searchParams.get("version");
-          if (expectedVersion && expectedVersion !== doc.version) {
-            return json({ error: "Document changed before its comparison was loaded.", currentVersion: doc.version }, 409);
-          }
-          const reviewId = url.searchParams.get("review");
-          const reviewComparison = reviewId ? reviewHistory.comparison(reviewId, doc.source) : null;
-          if (reviewComparison) {
-            const predecessor = reviewHistory.archive(reviewComparison.predecessorReviewId)!;
-            const predecessorDocument = loadDoc(doc.path, predecessor.source);
-            return json({
-              available: true,
-              mode: "review",
-              predecessorReviewId: reviewComparison.predecessorReviewId,
-              before: reviewComparison.before.revision ?? { version: reviewComparison.before.version },
-              after: revisionTracker.current(doc.path),
-              changeSet: reviewComparison.changeSet,
-              priorItems: predecessorDocument.items.map((item) => ({
-                id: item.id,
-                kind: item.kind,
-                parentId: item.parentId,
-                author: item.author,
-                text: item.text,
-                status: item.status,
-                anchorText: item.anchorText,
-                originalText: item.originalText,
-                replacementText: item.replacementText,
-                anchor: item.anchor,
-              })),
-              hunks: revisionDiff(predecessorDocument.clean, doc.clean),
-            }, 200);
-          }
-          const comparison = revisionTracker.comparison(doc.path);
-          if (!comparison) return json({ available: false }, 200);
+        const reviewId = url.searchParams.get("review");
+        const reviewComparison = reviewId ? reviewHistory.comparison(reviewId, doc.source) : null;
+        if (reviewComparison) {
+          const predecessor = reviewHistory.archive(reviewComparison.predecessorReviewId)!;
+          const predecessorDocument = loadDoc(doc.path, predecessor.source);
           return json({
             available: true,
-            mode: "revision",
-            before: { number: comparison.before.number, version: comparison.before.version, createdAt: comparison.before.createdAt },
-            after: { number: comparison.after.number, version: comparison.after.version, createdAt: comparison.after.createdAt },
-            hunks: revisionDiff(comparison.before.source, comparison.after.source),
+            mode: "review",
+            predecessorReviewId: reviewComparison.predecessorReviewId,
+            before: reviewComparison.before.revision ?? { version: reviewComparison.before.version },
+            after: revisionTracker.current(doc.path),
+            changeSet: reviewComparison.changeSet,
+            priorItems: predecessorDocument.items.map((item) => ({
+              id: item.id,
+              kind: item.kind,
+              parentId: item.parentId,
+              author: item.author,
+              text: item.text,
+              status: item.status,
+              anchorText: item.anchorText,
+              originalText: item.originalText,
+              replacementText: item.replacementText,
+              anchor: item.anchor,
+            })),
+            hunks: revisionDiff(predecessorDocument.clean, doc.clean),
           }, 200);
         }
-        if (p === "/api/raw") {
-          const doc = readDocFor(url.searchParams.get("path"), url.searchParams.get("review"));
-          // serve sibling assets (images) relative to the doc
-          const rel = url.searchParams.get("rel") ?? "";
-          return serveFile(path.dirname(doc.path), rel);
-        }
-        if (req.method === "POST" && p === "/api/annotate") {
-          const b = await req.json();
-          requireMutationVersion(b.version);
-          const doc = readDocFor(b.path, b.reviewId);
-          let anchorMode: string | undefined;
-          const written = writeDoc(doc, (current) => {
-            requireTrackedReview(current, b.reviewId, b.version);
-            const result = applySelectionAnnotation(current, b);
-            if (!result) throw Object.assign(new Error("Could not locate the selected text in the source. Try a shorter selection."), { status: 422 });
-            anchorMode = result.anchorMode;
-            return result.source;
-          }, b.version);
-          return json({ ok: true, anchorMode, version: written.version, revision: revisionTracker.current(doc.path) }, 200);
-        }
-        if (req.method === "POST" && p === "/api/annotate-object") {
-          const b = await req.json();
-          requireMutationVersion(b.version);
-          const doc = readDocFor(b.path, b.reviewId);
-          const written = writeDoc(doc, (current) => {
-            requireTrackedReview(current, b.reviewId, b.version);
-            const blk = topBlocks(current).find((x) => x.id === b.bid || `b${x.index}` === b.bid);
-            if (!blk) throw Object.assign(new Error(`no block ${b.bid}`), { status: 404 });
-            return annotateObject(current, blk.end, b.body, { block: b.bid, ...(b.target ? { target: b.target } : {}), ...(b.quote ? { quote: String(b.quote).slice(0, 500) } : {}) }, b.by);
-          }, b.version);
-          return json({ ok: true, version: written.version, revision: revisionTracker.current(doc.path) }, 200);
-        }
-        if (req.method === "POST" && p === "/api/reply") {
-          const b = await req.json();
-          const doc = readDocFor(b.path, b.reviewId);
-          const written = writeDoc(doc, (current) => {
-            requireTrackedReview(current, b.reviewId, b.version);
-            return reply(current, b.id, b.message, b.by ?? "user");
-          });
-          return json({ ok: true, version: written.version, revision: revisionTracker.current(doc.path) }, 200);
-        }
-        if (req.method === "POST" && p === "/api/resolve") {
-          const b = await req.json();
-          const doc = readDocFor(b.path, b.reviewId);
-          const written = writeDoc(doc, (current) => {
-            requireTrackedReview(current, b.reviewId, b.version);
-            return resolve(current, b.id, b.by ?? "user", undefined, b.summary);
-          });
-          return json({ ok: true, version: written.version, revision: revisionTracker.current(doc.path) }, 200);
-        }
-        if (req.method === "POST" && p === "/api/done") {
-          const b = await req.json();
-          let doc = readDocFor(b.path, b.reviewId);
-          requireTrackedReview(doc, b.reviewId, b.version);
-          if (b.note && String(b.note).trim()) {
-            const { appendRoughdraftDocumentComment } = await import("../vendor/rfm/index.js") as any;
-            doc = writeDoc(doc, (current) => appendRoughdraftDocumentComment(current.source, { message: String(b.note).trim(), author: b.by ?? "user" }));
-          }
-          const completedAt = new Date().toISOString();
-          const review = requireReview(b.reviewId);
-          reviewHistory.complete({
-            reviewId: review.id,
-            path: doc.path,
-            title: review.title,
-            version: doc.version,
-            source: doc.source,
-            completedAt,
-            revision: revisionTracker.current(doc.path),
-          });
-          const tracking = reviewTracker.complete(doc.path, b.reviewId, doc.version);
-          const ev = { path: doc.path, reviewId: String(b.reviewId), at: new Date().toISOString(), note: b.note };
-          doneLog.push(ev);
-          fs.appendFileSync(path.join(STATE_DIR, "done.log"), JSON.stringify(ev) + "\n");
-          broadcastReview(doc.path, ev.reviewId, { type: "done", ...ev });
-          notifyInbox();
-          return json({ ok: true, tracking }, 200);
-        }
-        return new Response("not found", { status: 404 });
-      } catch (err: any) {
-        return json({ error: err?.message ?? String(err), ...(err?.currentVersion ? { currentVersion: err.currentVersion } : {}) }, err?.status ?? 500);
+        const comparison = revisionTracker.comparison(doc.path);
+        if (!comparison) return json({ available: false }, 200);
+        return json({
+          available: true,
+          mode: "revision",
+          before: { number: comparison.before.number, version: comparison.before.version, createdAt: comparison.before.createdAt },
+          after: { number: comparison.after.number, version: comparison.after.version, createdAt: comparison.after.createdAt },
+          hunks: revisionDiff(comparison.before.source, comparison.after.source),
+        }, 200);
       }
-    },
-    websocket: {
-      open(ws) { if (ws.data.inbox) { inboxSockets.add(ws); return; } const set = topics.get(ws.data.path) ?? new Set(); set.add(ws); topics.set(ws.data.path, set);
-        if (!fs.existsSync(ws.data.path)) return;
-        ensureWatch(ws.data.path);
-        // A change between the page's first load and this socket opening (or during a reconnect gap) was
-        // broadcast to nobody; the current version lets the page notice and reload instead of going stale.
-        try { ws.send(JSON.stringify({ type: "hello", version: readDoc(ws.data.path).version })); } catch {}
-      },
-      close(ws) { if (ws.data.inbox) { inboxSockets.delete(ws); return; } topics.get(ws.data.path)?.delete(ws); },
-      message(ws, msg) { if (String(msg) === "ping") ws.send("pong"); },
-    },
+      if (p === "/api/raw") {
+        const doc = readDocFor(url.searchParams.get("path"), url.searchParams.get("review"));
+        // serve sibling assets (images) relative to the doc
+        const rel = url.searchParams.get("rel") ?? "";
+        return serveFile(path.dirname(doc.path), rel);
+      }
+      if (req.method === "POST" && p === "/api/annotate") {
+        const b = await req.json();
+        requireMutationVersion(b.version);
+        const doc = readDocFor(b.path, b.reviewId);
+        let anchorMode: string | undefined;
+        const written = writeDoc(doc, (current) => {
+          requireTrackedReview(current, b.reviewId, b.version);
+          const result = applySelectionAnnotation(current, b);
+          if (!result) throw Object.assign(new Error("Could not locate the selected text in the source. Try a shorter selection."), { status: 422 });
+          anchorMode = result.anchorMode;
+          return result.source;
+        }, b.version);
+        return json({ ok: true, anchorMode, version: written.version, revision: revisionTracker.current(doc.path) }, 200);
+      }
+      if (req.method === "POST" && p === "/api/annotate-object") {
+        const b = await req.json();
+        requireMutationVersion(b.version);
+        const doc = readDocFor(b.path, b.reviewId);
+        const written = writeDoc(doc, (current) => {
+          requireTrackedReview(current, b.reviewId, b.version);
+          const blk = topBlocks(current).find((x) => x.id === b.bid || `b${x.index}` === b.bid);
+          if (!blk) throw Object.assign(new Error(`no block ${b.bid}`), { status: 404 });
+          return annotateObject(current, blk.end, b.body, { block: b.bid, ...(b.target ? { target: b.target } : {}), ...(b.quote ? { quote: String(b.quote).slice(0, 500) } : {}) }, b.by);
+        }, b.version);
+        return json({ ok: true, version: written.version, revision: revisionTracker.current(doc.path) }, 200);
+      }
+      if (req.method === "POST" && p === "/api/reply") {
+        const b = await req.json();
+        const doc = readDocFor(b.path, b.reviewId);
+        const written = writeDoc(doc, (current) => {
+          requireTrackedReview(current, b.reviewId, b.version);
+          return reply(current, b.id, b.message, b.by ?? "user");
+        });
+        return json({ ok: true, version: written.version, revision: revisionTracker.current(doc.path) }, 200);
+      }
+      if (req.method === "POST" && p === "/api/resolve") {
+        const b = await req.json();
+        const doc = readDocFor(b.path, b.reviewId);
+        const written = writeDoc(doc, (current) => {
+          requireTrackedReview(current, b.reviewId, b.version);
+          return resolve(current, b.id, b.by ?? "user", undefined, b.summary);
+        });
+        return json({ ok: true, version: written.version, revision: revisionTracker.current(doc.path) }, 200);
+      }
+      if (req.method === "POST" && p === "/api/done") {
+        const b = await req.json();
+        let doc = readDocFor(b.path, b.reviewId);
+        requireTrackedReview(doc, b.reviewId, b.version);
+        if (b.note && String(b.note).trim()) {
+          const { appendRoughdraftDocumentComment } = await import("../vendor/rfm/index.js") as any;
+          doc = writeDoc(doc, (current) => appendRoughdraftDocumentComment(current.source, { message: String(b.note).trim(), author: b.by ?? "user" }));
+        }
+        const completedAt = new Date().toISOString();
+        const review = requireReview(b.reviewId);
+        reviewHistory.complete({
+          reviewId: review.id,
+          path: doc.path,
+          title: review.title,
+          version: doc.version,
+          source: doc.source,
+          completedAt,
+          revision: revisionTracker.current(doc.path),
+        });
+        const tracking = reviewTracker.complete(doc.path, b.reviewId, doc.version);
+        const ev = { path: doc.path, reviewId: String(b.reviewId), at: new Date().toISOString(), note: b.note };
+        doneLog.push(ev);
+        fs.appendFileSync(path.join(STATE_DIR, "done.log"), JSON.stringify(ev) + "\n");
+        broadcastReview(doc.path, ev.reviewId, { type: "done", ...ev });
+        notifyInbox();
+        return json({ ok: true, tracking }, 200);
+      }
+      return new Response("not found", { status: 404 });
+    } catch (err: any) {
+      const status = err?.status ?? 500;
+      if (status >= 500) console.error("Failed to handle HTTP request:", err);
+      return json({ error: err?.message ?? String(err), ...(err?.currentVersion ? { currentVersion: err.currentVersion } : {}) }, status);
+    }
+  }
+  async function handleIncoming(req: http.IncomingMessage, srv: Upgrader): Promise<Response> {
+    let request: Request;
+    try { request = await toRequest(req); }
+    catch (err) {
+      console.error("Invalid HTTP request:", err);
+      return json({ error: "Invalid HTTP request." }, 400);
+    }
+    return handle(request, srv);
+  }
+  const wss = new WebSocketServer({ noServer: true });
+  const server = http.createServer(async (req, res) => {
+    try {
+      await sendResponse(res, await handleIncoming(req, { upgrade: () => false }), req.method === "HEAD");
+    } catch (err) {
+      console.error("Failed to send HTTP response:", err);
+      if (res.headersSent || res.destroyed) { res.destroy(); return; }
+      res.writeHead(500, { "content-type": "text/plain" });
+      res.end(req.method === "HEAD" ? undefined : "Internal server error.");
+    }
   });
+  // Routing stays in `handle`: an upgrade request runs the same handler, which names the
+  // socket's subscription instead of answering, or answers with the error it would send.
+  server.on("upgrade", async (req, socket, head) => {
+    // A client can reset while routing is awaited, before ws installs its own listeners.
+    socket.on("error", () => socket.destroy());
+    let data = null as Client | null;
+    let response: Response;
+    try {
+      response = await handleIncoming(req, { upgrade: (_req, o) => { data = o.data; return true; } });
+    } catch (err) {
+      console.error("Failed to route WebSocket upgrade:", err);
+      if (!socket.destroyed) socket.end("HTTP/1.1 500 Internal Server Error\r\nconnection: close\r\n\r\n");
+      return;
+    }
+    if (socket.destroyed) return;
+    if (!data) { socket.end(`HTTP/1.1 ${response.status} ${http.STATUS_CODES[response.status] ?? ""}\r\nconnection: close\r\n\r\n`); return; }
+    const client = data;
+    wss.handleUpgrade(req, socket, head, (raw) => {
+      const ws = Object.assign(raw, { data: client });
+      // Install cleanup before anything that can fail during connection setup.
+      ws.on("close", () => { if (client.inbox) inboxSockets.delete(ws); else topics.get(client.path)?.delete(ws); });
+      ws.on("error", (err) => { console.error("WebSocket connection failed:", err); ws.terminate(); });
+      ws.on("message", (msg) => { if (String(msg) === "ping") ws.send("pong"); });
+      if (client.inbox) inboxSockets.add(ws);
+      else {
+        const exists = fs.existsSync(client.path);
+        try { if (exists) ensureWatch(client.path); }
+        catch (err) {
+          console.error("Failed to watch review document:", err);
+          ws.close(1011, "Unable to watch document.");
+          return;
+        }
+        const set = topics.get(client.path) ?? new Set(); set.add(ws); topics.set(client.path, set);
+        if (exists) {
+          // A change between the page's first load and this socket opening (or during a reconnect gap) was
+          // broadcast to nobody; the current version lets the page notice and reload instead of going stale.
+          try { ws.send(JSON.stringify({ type: "hello", version: readDoc(client.path).version })); } catch {}
+        }
+      }
+    });
+  });
+  await new Promise<void>((done, fail) => { server.once("error", fail); server.listen(port, () => { server.off("error", fail); done(); }); });
+  const actualPort = (server.address() as AddressInfo).port;
   fs.mkdirSync(STATE_DIR, { recursive: true });
-  fs.writeFileSync(STATE_FILE, JSON.stringify({ port: server.port, pid: process.pid, startedAt: new Date().toISOString(), ...(publicOrigin ? { publicUrl: publicOrigin } : {}) }));
-  return Object.assign(server, { publicOrigin });
+  fs.writeFileSync(STATE_FILE, JSON.stringify({ port: actualPort, pid: process.pid, startedAt: new Date().toISOString(), ...(publicOrigin ? { publicUrl: publicOrigin } : {}) }));
+  return { port: actualPort, publicOrigin, stop() { wss.close(); server.close(); server.closeAllConnections(); } };
 }
 
-if (import.meta.main) {
+if (process.argv[1] && path.resolve(process.argv[1]) === import.meta.filename) {
   const port = Number(process.env.MYD_PORT ?? 7474);
-  const s = startServer(port);
+  const s = await startServer(port);
   console.log(`myd server on http://localhost:${s.port}`);
   if (s.publicOrigin) console.log(`public review origin ${s.publicOrigin}`);
 }

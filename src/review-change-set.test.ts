@@ -332,4 +332,27 @@ describe("ReviewChangeSet", () => {
     expect(changes.find((change) => change.kind === "removed" && change.summary.includes("evaluator"))?.priorItemIds).toEqual(["c1"]);
     expect(changes.find((change) => change.kind === "added" && change.summary.includes("evaluator"))?.priorItemIds).toEqual([]);
   });
+  test("an HTML block above a commented paragraph is not mistaken for a section heading", () => {
+    const before = [
+      "<div>Status: draft</div>",
+      "",
+      "The evaluator {==passes ambiguous traces==}{>>Explain how ambiguity is classified.<<}{#c1}.",
+      "",
+      "---",
+      "comments:",
+      "  c1: {by: user, at: 2026-09-23T18:00:00Z, status: open}",
+      "",
+    ].join("\n");
+    const after = [
+      "<div>Status: revised</div>",
+      "",
+      "The evaluator passes traces by reporting ambiguity separately from failure.",
+      "",
+    ].join("\n");
+
+    const paragraph = buildReviewChangeSet({ beforeSource: before, afterSource: after }).changes
+      .find((change) => change.after?.source.startsWith("The evaluator"));
+    expect(paragraph?.priorItemIds).toEqual(["c1"]);
+    expect(paragraph?.contextItemIds ?? []).toEqual([]);
+  });
 });

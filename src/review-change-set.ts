@@ -48,12 +48,17 @@ function wordTokens(value: string): Set<string> {
   );
 }
 
+// Block types are h1–h6 for headings; "html" also starts with "h", so match the whole type.
+function isHeading(block: { type: string }): boolean {
+  return /^h[1-6]$/.test(block.type);
+}
+
 function describeBlocks(doc: Doc): DescribedBlock[] {
   let section = "document";
   let sectionIndex: number | null = null;
   return topBlocks(doc).map((block, index) => {
     const source = doc.clean.slice(doc.origToClean(block.start), doc.origToClean(block.end)).trimEnd();
-    if (block.type.startsWith("h")) {
+    if (isHeading(block)) {
       section = block.name ?? source.replace(/^#{1,6}\s+/, "").replace(/\s+\{#[^}]+\}\s*$/, "");
       sectionIndex = index;
     }
@@ -187,25 +192,25 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
   const nearestMatchedHeadingAfter = (index: number, direction: -1 | 1): number => {
     for (let cursor = index + direction; cursor >= 0 && cursor < before.length; cursor += direction) {
       const matched = beforeMatch.get(cursor);
-      if (matched !== undefined && before[cursor]!.block.type.startsWith("h") && after[matched]!.block.type.startsWith("h")) return matched;
+      if (matched !== undefined && isHeading(before[cursor]!.block) && isHeading(after[matched]!.block)) return matched;
     }
     return direction < 0 ? -1 : after.length;
   };
   const nearestMatchedHeading = (index: number, direction: -1 | 1): number => {
     for (let cursor = index + direction; cursor >= 0 && cursor < after.length; cursor += direction) {
-      if (afterMatch.has(cursor) && after[cursor]!.block.type.startsWith("h")) return cursor;
+      if (afterMatch.has(cursor) && isHeading(after[cursor]!.block)) return cursor;
     }
     return direction < 0 ? -1 : after.length;
   };
   const beforeHeadingGroups = new Map<string, number[]>();
   const afterHeadingGroups = new Map<string, number[]>();
   for (let i = 0; i < before.length; i++) {
-    if (beforeMatch.has(i) || before[i]!.block.name || !before[i]!.block.type.startsWith("h")) continue;
+    if (beforeMatch.has(i) || before[i]!.block.name || !isHeading(before[i]!.block)) continue;
     const key = `${nearestMatchedHeadingAfter(i, -1)}\0${nearestMatchedHeadingAfter(i, 1)}`;
     beforeHeadingGroups.set(key, [...beforeHeadingGroups.get(key) ?? [], i]);
   }
   for (let j = 0; j < after.length; j++) {
-    if (afterMatch.has(j) || after[j]!.block.name || !after[j]!.block.type.startsWith("h")) continue;
+    if (afterMatch.has(j) || after[j]!.block.name || !isHeading(after[j]!.block)) continue;
     const key = `${nearestMatchedHeading(j, -1)}\0${nearestMatchedHeading(j, 1)}`;
     afterHeadingGroups.set(key, [...afterHeadingGroups.get(key) ?? [], j]);
   }
@@ -220,7 +225,7 @@ export function buildReviewChangeSet(input: { beforeSource: string; afterSource:
   // Once headings are paired, fuzzy-match only inside those corresponding sections. This keeps
   // prior feedback from jumping to similar prose under an unrelated new heading.
   for (const [beforeHeading, afterHeading] of [...beforeMatch]) {
-    if (!before[beforeHeading]!.block.type.startsWith("h") || !after[afterHeading]!.block.type.startsWith("h")) continue;
+    if (!isHeading(before[beforeHeading]!.block) || !isHeading(after[afterHeading]!.block)) continue;
     const types = new Set(before
       .filter((candidate, index) => !beforeMatch.has(index) && !candidate.block.name && candidate.sectionIndex === beforeHeading)
       .map((candidate) => candidate.block.type));

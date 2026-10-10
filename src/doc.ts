@@ -1,6 +1,7 @@
 // Source-of-truth model for a Markdown document with Roughdraft-flavored CriticMarkup.
 // The file is the model. This module only *reads* it into a shape the renderer and
 // annotation layer can use, and *splices* annotations back at exact source offsets.
+import { createHash } from "node:crypto";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { extractRoughdraftReviewIndex } from "../vendor/rfm/index.js";
 
@@ -34,6 +35,9 @@ export type Doc = {
   endmatter: Endmatter;  // parsed YAML endmatter (comments/suggestions maps)
   items: ReviewItem[];
   cleanToOrig(o: number): number;
+  /** Like cleanToOrig, but for the END of a range: a clean offset on a boundary maps past any markup that
+   *  closes there, so a block ending in `{==x==}{>>note<<}{#c1}` keeps its whole annotation. */
+  cleanToOrigEnd(o: number): number;
   origToClean(o: number): number;
 };
 
@@ -114,7 +118,16 @@ export function fenceRanges(text: string): Array<[number, number]> {
   return out;
 }
 
-function makeMaps(segs: Seg[]) {
+function makeMaps(segs: Seg[], bodyLength: number) {
+  const cleanToOrigEnd = (o: number) => {
+    for (let i = segs.length - 1; i >= 0; i--) {
+      const s = segs[i]!;
+      if (o < s.cleanStart || o > s.cleanStart + s.len) continue;
+      // at the very end of the last kept run, only stripped markup can follow: it closes this range
+      return i === segs.length - 1 && o === s.cleanStart + s.len ? bodyLength : s.origStart + (o - s.cleanStart);
+    }
+    return bodyLength;
+  };
   const cleanToOrig = (o: number) => {
     for (const s of segs) if (o >= s.cleanStart && o <= s.cleanStart + s.len) return s.origStart + (o - s.cleanStart);
     const l = segs[segs.length - 1];
@@ -128,17 +141,17 @@ function makeMaps(segs: Seg[]) {
     const l = segs[segs.length - 1];
     return l ? l.cleanStart + l.len : 0;
   };
-  return { cleanToOrig, origToClean };
+  return { cleanToOrig, cleanToOrigEnd, origToClean };
 }
 
 export function hashVersion(source: string): string {
-  return new Bun.CryptoHasher("sha1").update(source).digest("hex").slice(0, 12);
+  return createHash("sha1").update(source).digest("hex").slice(0, 12);
 }
 
 export function loadDoc(path: string, source: string): Doc {
   const { body, endmatter } = splitEndmatter(source);
   const { clean, segs } = stripMarkers(body);
-  const { cleanToOrig, origToClean } = makeMaps(segs);
+  const { cleanToOrig, cleanToOrigEnd, origToClean } = makeMaps(segs, body.length);
   const idx = extractRoughdraftReviewIndex(source) as any;
   const items: ReviewItem[] = (idx.items as any[]).map((it) => {
     const meta = endmatter.comments[it.id] ?? endmatter.suggestions[it.id] ?? {};
@@ -149,7 +162,7 @@ export function loadDoc(path: string, source: string): Doc {
       anchor: meta.anchor ?? null,
     };
   });
-  return { path, source, version: hashVersion(source), body, clean, endmatter, items, cleanToOrig, origToClean };
+  return { path, source, version: hashVersion(source), body, clean, endmatter, items, cleanToOrig, cleanToOrigEnd, origToClean };
 }
 
 // ---------- mutations (surgical splices; everything else byte-identical) ----------

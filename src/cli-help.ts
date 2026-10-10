@@ -24,7 +24,7 @@ export type CommandHelp = {
 const JSON_FLAG: [string, string] = ["--json", "machine-readable output"];
 const DRY_RUN_FLAG: [string, string] = ["--dry-run", "run every check a real write runs (same errors, exit codes); print the unified diff and any positional-id shift; write nothing"];
 const GUARD_RULES = [
-  "A guard is a hash of the block's own source: it names *what* you planned to edit, not where it sits. Edits elsewhere, replies and resolutions leave it unchanged.",
+  "A guard is a hash of the block's own source: it names *what* you planned to edit, not where it sits. Edits elsewhere, replies and resolutions leave it unchanged. Identical blocks share a guard, so a guard matching several blocks is refused unless you also give the id and --version.",
   "A positional id (`b3`) needs --expect <guard>; if that content has moved, the write fails and names its new position. --target-guard G addresses the block by content alone, with no id.",
   "With a guard, --version is optional, so a batch planned from one listing applies in any order. A named block (`## Results {#results}`) without a guard needs --version. A supplied --version is always enforced (stale: exit 3, nothing written).",
 ];
@@ -32,7 +32,7 @@ const GUARD_RULES = [
 export const COMMANDS: Record<string, CommandHelp> = {
   view: {
     group: "review",
-    syntax: "<file.md> [--wait] [--timeout S] [--no-open] [--session ID] [--from-review ID] [--skip-check]",
+    syntax: "<file.md> [--wait] [--timeout S] [--no-open] [--session ID] [--from-review [ID]] [--skip-check]",
     summary: "open a review in the viewer; returns immediately unless --wait",
     detail:
       "Creates a review, prints its URL, and locally opens a desktop browser. The default is\n" +
@@ -41,10 +41,10 @@ export const COMMANDS: Record<string, CommandHelp> = {
     args: [["<file.md>", "the Markdown document to review"]],
     flags: [
       ["--wait", "block until the reviewer clicks Done Reviewing (default: return immediately)"],
-      ["--timeout S", "seconds to block with --wait (default 1800; must be positive)"],
+      ["--timeout S", "seconds to block with --wait (default 1800; 0 = no limit)"],
       ["--no-open", "never launch a desktop browser; the URL is still printed"],
       ["--session ID", "scope the review to one caller (default: $MYD_SESSION, else $CLAUDE_CODE_SESSION_ID)"],
-      ["--from-review ID", "open a change-focused successor linked to a completed review"],
+      ["--from-review [ID]", "open a change-focused successor of a completed review (default: this file's latest)"],
       ["--skip-check", "open the review without the structural preflight"],
       JSON_FLAG,
     ],
@@ -53,6 +53,8 @@ export const COMMANDS: Record<string, CommandHelp> = {
         "Without --wait: nonblocking, exits 0 once the review is created.",
         "With --wait: blocks until Done, then prints the reviewer's note. Exits 1 if the wait times out, or if the review was superseded or archived and can no longer be completed.",
         "Use --wait only when the caller can genuinely block. If it would mean repeated polling, drop the waiter and pick the review up next turn with `myd comments`.",
+        "Background handoff: an agent whose runtime wakes it when a background command exits (Claude Code's `run_in_background`) runs `myd view FILE --wait --timeout 0` in the background and ends its turn. Done exits the command, which wakes the agent with the result.",
+        "A dropped server connection reconnects instead of ending the wait, and every exit prints its reason, including a signal.",
       ]],
       ["Preflight", [
         "`myd check` runs first, before the server starts. Structural errors print with file and line and exit 2 without creating a review; warnings print and the review opens anyway.",
@@ -78,7 +80,7 @@ export const COMMANDS: Record<string, CommandHelp> = {
       "Always blocking. Subscribes by document path, so a Done landing on any review of this file\n" +
       "ends the wait — unlike `myd view --wait`, which also watches its own review's lifecycle.",
     args: [["<file.md>", "the document whose review to wait on"]],
-    flags: [["--timeout S", "seconds to block (default 1800; must be positive)"], JSON_FLAG],
+    flags: [["--timeout S", "seconds to block (default 1800; 0 = no limit)"], JSON_FLAG],
     sections: [["Blocking", ["Exits 1 on timeout, 0 when Done arrives."]]],
     example: ["myd wait plans/roadmap.md --timeout 600"],
     seeAlso: ["myd view", "myd comments"],

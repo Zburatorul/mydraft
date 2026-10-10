@@ -58,7 +58,7 @@ async function openReviewSocket(reviewId: string) {
 }
 
 // Runs the real CLI so the session it sends is covered, not just the tracker that consumes it.
-async function runView(doc: string, session: string, fromReview?: string) {
+async function runView(doc: string, session: string, fromReview?: string | true) {
   const env: Record<string, string> = { ...process.env as Record<string, string>, MYD_HOME: path.join(tempDir, "state"), MYD_NO_OPEN: "1", MYD_SESSION: session };
   delete env.CLAUDE_CODE_SESSION_ID;
   // These tests exercise registry lifecycle, not the structural gate (covered in check.test.ts).
@@ -70,7 +70,8 @@ async function runView(doc: string, session: string, fromReview?: string) {
     "--json",
     "--no-open",
     "--skip-check",
-    ...(fromReview ? ["--from-review", fromReview] : []),
+    // A bare flag goes last, so it cannot take the next argument as its value.
+    ...(fromReview === true ? ["--from-review"] : fromReview ? ["--from-review", fromReview] : []),
   ], { cwd: ROOT, env, stdout: "pipe", stderr: "pipe" });
   const output = await new Response(cli.stdout).text();
   expect(await cli.exited).toBe(0);
@@ -263,6 +264,43 @@ describe("durable review registry API", () => {
     await startServer();
     const restored = await (await fetch(`${baseUrl}/api/changes?review=${encodeURIComponent(successor.reviewId)}`)).json() as { mode: string; predecessorReviewId: string };
     expect(restored).toMatchObject({ mode: "review", predecessorReviewId: first.reviewId });
+  }, TEST_TIMEOUT_MS);
+
+  test("a bare --from-review links the document's latest completed review", async () => {
+    if (!server) await startServer();
+    const doc = path.join(tempDir, "latest-predecessor.md");
+    fs.writeFileSync(doc, "# Plan\n\nFirst draft.\n");
+    const complete = async () => {
+      const response = await postJson("/api/reviews", { path: doc, context: { session: "latest-agent" } });
+      const review = await response.json() as { reviewId: string; currentVersion: string };
+      expect((await postJson("/api/done", { reviewId: review.reviewId, version: review.currentVersion })).status).toBe(200);
+      return review.reviewId;
+    };
+
+    const unlinked = await postJson("/api/reviews", { path: doc, fromLatestReview: true });
+    expect(unlinked.status).toBe(409);
+
+    await complete();
+    fs.writeFileSync(doc, "# Plan\n\nSecond draft.\n");
+    const latest = await complete();
+    fs.writeFileSync(doc, "# Plan\n\nThird draft.\n");
+
+    const successor = await runView(doc, "latest-agent", true);
+    const record = await (await fetch(`${baseUrl}/api/reviews/${encodeURIComponent(successor.reviewId)}`)).json() as { review: { predecessorReviewId: string | null } };
+    expect(record.review.predecessorReviewId).toBe(latest);
+  }, TEST_TIMEOUT_MS);
+
+  test("a completed review cannot be tracked again by its id", async () => {
+    if (!server) await startServer();
+    const doc = path.join(tempDir, "completed-by-id.md");
+    fs.writeFileSync(doc, "# Plan\n\nDraft.\n");
+    const response = await postJson("/api/reviews", { path: doc });
+    const review = await response.json() as { reviewId: string; currentVersion: string };
+    expect((await postJson("/api/done", { reviewId: review.reviewId, version: review.currentVersion })).status).toBe(200);
+    fs.writeFileSync(doc, "# Plan\n\nEdited after Done.\n");
+
+    const retracked = await postJson("/api/reviews", { reviewId: review.reviewId });
+    expect(retracked.status).toBe(409);
   }, TEST_TIMEOUT_MS);
 
   test("done events can be filtered to a single review of a shared document", async () => {
